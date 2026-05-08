@@ -6,7 +6,7 @@ from random import choice, random, shuffle
 
 from neat.activations import ActivationFunctionSet
 from neat.aggregations import AggregationFunctionSet
-from neat.config import ConfigParameter, write_pretty_params
+from neat.config import ConfigParameter, UnknownConfigItemError, write_pretty_params
 from neat.genes import DefaultConnectionGene, DefaultNodeGene
 from neat.graphs import creates_cycle
 from neat.graphs import required_for_output
@@ -49,11 +49,41 @@ class DefaultGenomeConfig:
         self._params += self.connection_gene_type.get_config_params()
 
         # Use the configuration data to interpret the supplied parameters.
+        param_list_names = []
         for p in self._params:
             setattr(self, p.name, p.interpret(params, section_name))
+            param_list_names.append(p.name)
+
+        # Symmetric with DefaultClassConfig: reject unknown keys so typos in
+        # gene-attribute names (e.g. ``bias_init_typ`` for ``bias_init_type``)
+        # surface as configuration errors instead of silently using defaults.
+        # ``node_gene_type`` and ``connection_gene_type`` are injected by
+        # ``parse_config`` and are not user-facing config keys; ignore them.
+        injected_keys = {'node_gene_type', 'connection_gene_type'}
+        unknown_list = [x for x in params
+                        if x not in param_list_names and x not in injected_keys]
+        if unknown_list:
+            if len(unknown_list) > 1:
+                raise UnknownConfigItemError(
+                    f"Unknown configuration items in [{section_name}] section:\n\t"
+                    + "\n\t".join(unknown_list))
+            raise UnknownConfigItemError(
+                f"Unknown configuration item in [{section_name}] section: {unknown_list[0]!s}")
 
         self.node_gene_type.validate_attributes(self)
         self.connection_gene_type.validate_attributes(self)
+
+        # CTRNN integrates with ``decay = exp(-dt / tau)`` per node, so a
+        # non-positive ``time_constant_min_value`` either divides by zero or
+        # produces a negative-tau decay term. Catch this at config-load rather
+        # than mid-simulation. The check is a no-op for non-CTRNN networks
+        # since the attribute is required on every DefaultNodeGene.
+        if hasattr(self, 'time_constant_min_value'):
+            if self.time_constant_min_value <= 0.0:
+                raise RuntimeError(
+                    f"time_constant_min_value must be > 0 (got "
+                    f"{self.time_constant_min_value!r}); CTRNN integration uses "
+                    f"exp(-dt/tau) which requires strictly positive tau.")
 
         # By convention, input pins have negative keys, and the output
         # pins have keys 0,1,...
@@ -140,16 +170,16 @@ class DefaultGenomeConfig:
     def __getstate__(self):
         """Prepare config for pickling by converting node_indexer to a picklable form."""
         state = self.__dict__.copy()
-        # Convert the itertools.count object to an integer representing the next value
-        # We peek at the value by calling next() and storing it, then the counter advances
         if self.node_indexer is not None:
-            # We need to save the next value that would be returned
-            # Since calling next() consumes the value, we save it and will recreate
-            # the counter starting from that value when unpickling
-            state['_node_indexer_next_value'] = next(self.node_indexer)
-            state['node_indexer'] = None
+            # Peek at the next value by consuming, then rewind the live counter
+            # so __getstate__ has no side effect on the running process. Without
+            # the rewind, every pickle.dumps(config) silently skips one node id.
+            next_value = next(self.node_indexer)
+            self.node_indexer = count(next_value)
+            state['_node_indexer_next_value'] = next_value
         else:
             state['_node_indexer_next_value'] = None
+        state['node_indexer'] = None
         return state
 
     def __setstate__(self, state):

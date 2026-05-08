@@ -689,5 +689,50 @@ class TestGPUEvaluatorIntegration:
             print(f"  Genome {gid}: fitness = {genome.fitness:.4f}")
 
 
+@requires_gpu
+class TestActivationKernelCoverage:
+    """
+    Every activation in ACTIVATION_IDS must have a working kernel branch.
+    Adding a new entry without updating the GPU kernel switch in
+    _cupy_backend.py would otherwise produce silent CPU/GPU divergence.
+    The kernel's unknown-id branch now emits NaN, so any missing branch
+    surfaces here as a NaN output.
+    """
+
+    def test_all_activation_ids_match_cpu_within_tolerance(self):
+        from neat.gpu._padding import ACTIVATION_IDS, pack_ctrnn_population
+        from neat.gpu._cupy_backend import evaluate_ctrnn_batch
+
+        config = _make_ctrnn_config()
+        dt = 0.005
+        num_steps = 50
+        input_vals = [0.3, -0.2]
+        inputs_np = np.tile(np.array(input_vals, dtype=np.float32),
+                            (num_steps, 1))
+
+        for act_name in sorted(ACTIVATION_IDS.keys()):
+            genome = _make_simple_ctrnn_genome(
+                config, bias=0.4, response=1.0, tau=0.5,
+                w_in1=0.7, w_in2=-0.5, activation=act_name)
+            genomes = [(1, genome)]
+
+            net = neat.ctrnn.CTRNN.create(genome, config)
+            cpu_out = []
+            for _ in range(num_steps):
+                cpu_out.append(net.advance(input_vals, dt, dt)[0])
+            cpu_arr = np.array(cpu_out, dtype=np.float64)
+
+            packed = pack_ctrnn_population(genomes, config)
+            traj = evaluate_ctrnn_batch(packed, inputs_np, dt)
+            gpu_arr = np.array(traj[0, :, 0], dtype=np.float64)
+
+            assert np.all(np.isfinite(gpu_arr)), (
+                f"GPU output for activation '{act_name}' contains NaN/inf — "
+                f"likely missing kernel branch in _cupy_backend.py")
+            max_err = float(np.max(np.abs(cpu_arr - gpu_arr)))
+            assert max_err < 1e-3, (
+                f"CPU/GPU mismatch for activation '{act_name}': max_err={max_err:.2e}")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

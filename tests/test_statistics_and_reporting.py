@@ -824,5 +824,56 @@ class TestStatisticsReporter(unittest.TestCase):
             os.rmdir(temp_dir)
 
 
+class TestEmptyInputEdgeCases(unittest.TestCase):
+    """
+    Regression tests for empty-input edge cases that previously raised
+    bare ZeroDivisionError / IndexError instead of producing a meaningful
+    sentinel or typed exception.
+    """
+
+    def test_mean_empty_returns_nan(self):
+        from math import isnan
+        from neat.math_util import mean
+        self.assertTrue(isnan(mean([])))
+
+    def test_variance_empty_returns_nan(self):
+        from math import isnan
+        from neat.math_util import variance
+        self.assertTrue(isnan(variance([])))
+
+    def test_stdev_empty_returns_nan(self):
+        from math import isnan
+        from neat.math_util import stdev
+        self.assertTrue(isnan(stdev([])))
+
+    def test_softmax_empty_returns_empty_list(self):
+        from neat.math_util import softmax
+        self.assertEqual(softmax([]), [])
+
+    def test_softmax_all_huge_negatives_returns_uniform(self):
+        # All values underflow exp() to 0.0 -> previously divided by zero.
+        from neat.math_util import softmax
+        result = softmax([-1e6, -1e6, -1e6])
+        self.assertEqual(len(result), 3)
+        self.assertAlmostEqual(sum(result), 1.0, places=10)
+        for r in result:
+            self.assertAlmostEqual(r, 1.0 / 3.0, places=10)
+
+    def test_best_genome_raises_runtime_error_when_no_generation(self):
+        stats = StatisticsReporter()
+        with self.assertRaises(RuntimeError):
+            stats.best_genome()
+
+    def test_get_fitness_stat_handles_empty_generation_scores(self):
+        # A generation with no recorded species should not crash the
+        # per-generation aggregation; it should produce a NaN sentinel.
+        from math import isnan
+        stats = StatisticsReporter()
+        stats.generation_statistics.append({})
+        means = stats.get_fitness_mean()
+        self.assertEqual(len(means), 1)
+        self.assertTrue(isnan(means[0]))
+
+
 if __name__ == '__main__':
     unittest.main()

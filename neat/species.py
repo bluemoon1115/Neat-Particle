@@ -179,12 +179,16 @@ class DefaultSpeciesSet(DefaultClassConfig):
     def __getstate__(self):
         """Prepare species set for pickling by converting indexer to a picklable form."""
         state = self.__dict__.copy()
-        # Convert the itertools.count object to an integer representing the next value
         if self.indexer is not None:
-            state['_indexer_next_value'] = next(self.indexer)
-            state['indexer'] = None
+            # Peek at the next value by consuming, then rewind the live counter
+            # so __getstate__ has no side effect on the running process. Without
+            # the rewind, every pickle.dumps(species_set) silently skips one species id.
+            next_value = next(self.indexer)
+            self.indexer = count(next_value)
+            state['_indexer_next_value'] = next_value
         else:
             state['_indexer_next_value'] = None
+        state['indexer'] = None
         return state
 
     def __setstate__(self, state):

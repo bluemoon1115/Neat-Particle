@@ -75,8 +75,19 @@ class StatisticsReporter(BaseReporter):
         return sorted(self.most_fit_genomes, key=lambda g: g.fitness, reverse=descending)[:n]
 
     def best_genome(self):
-        """Returns the most fit genome ever seen."""
-        return self.best_genomes(1)[0]
+        """Returns the most fit genome ever seen.
+
+        Raises ``RuntimeError`` if no generation has been evaluated yet
+        (``most_fit_genomes`` is empty), instead of the historical
+        ``IndexError`` that was opaque to callers introspecting the
+        reporter before the first ``post_evaluate``.
+        """
+        best = self.best_genomes(1)
+        if not best:
+            raise RuntimeError(
+                "best_genome() called before any generation has been evaluated; "
+                "no most-fit genome has been recorded yet")
+        return best[0]
 
     def save(self):
         self.save_genome_fitness()

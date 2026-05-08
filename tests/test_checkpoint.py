@@ -662,5 +662,133 @@ class TestCheckpointIntegrity(unittest.TestCase):
         self.assertIsNotNone(species_set, "Species set should not be None")
 
 
+class TestInnovationNumberAlignmentAcrossRestore(unittest.TestCase):
+    """
+    The innovation tracker's global counter must continue from the saved
+    value after restore — not reset to 0, and not skip ahead. Otherwise
+    post-restore connections collide with pre-save innovation numbers, or
+    leave gaps that confuse crossover alignment.
+    """
+
+    def setUp(self):
+        local_dir = os.path.dirname(__file__)
+        config_path = os.path.join(local_dir, 'test_configuration')
+        self.config = neat.Config(
+            neat.DefaultGenome,
+            neat.DefaultReproduction,
+            neat.DefaultSpeciesSet,
+            neat.DefaultStagnation,
+            config_path,
+        )
+        self.temp_dir = tempfile.mkdtemp(prefix='neat_innov_align_')
+        self.checkpoint_prefix = os.path.join(self.temp_dir, 'test-checkpoint-')
+
+    def tearDown(self):
+        if os.path.exists(self.temp_dir):
+            shutil.rmtree(self.temp_dir)
+
+    @staticmethod
+    def _fitness_fn(genomes, config):
+        for _, g in genomes:
+            g.fitness = 0.5
+
+    def test_innovation_counter_continues_monotonically_after_restore(self):
+        pop = neat.Population(self.config, seed=42)
+        checkpointer = neat.Checkpointer(1, filename_prefix=self.checkpoint_prefix)
+        pop.add_reporter(checkpointer)
+        pop.run(self._fitness_fn, 3)
+
+        checkpoint_file = f'{self.checkpoint_prefix}1'
+        restored = neat.Checkpointer.restore_checkpoint(checkpoint_file)
+        counter_before = restored.reproduction.innovation_tracker.global_counter
+
+        restored.run(self._fitness_fn, 2)
+
+        counter_after = restored.reproduction.innovation_tracker.global_counter
+        self.assertGreaterEqual(
+            counter_after, counter_before,
+            f"Innovation counter must not decrease after restore "
+            f"(was {counter_before}, now {counter_after})")
+
+        all_innovations = []
+        for genome in restored.population.values():
+            for conn in genome.connections.values():
+                all_innovations.append(conn.innovation)
+        self.assertTrue(all(i > 0 for i in all_innovations),
+                        "All innovation numbers must be positive integers")
+        max_innov = max(all_innovations)
+        self.assertLessEqual(
+            max_innov, counter_after,
+            f"No connection's innovation number ({max_innov}) should exceed "
+            f"the global counter ({counter_after})")
+
+
+class TestPickleDoesNotConsumeIndexers(unittest.TestCase):
+    """
+    Regression tests: pickling DefaultGenomeConfig / DefaultSpeciesSet must not
+    advance the live counters. Before the fix, every pickle.dumps(...) consumed
+    one node id and one species id, causing the running process and any
+    restored checkpoint to diverge by one id per save.
+    """
+
+    def setUp(self):
+        local_dir = os.path.dirname(__file__)
+        config_path = os.path.join(local_dir, 'test_configuration')
+        self.config = neat.Config(
+            neat.DefaultGenome,
+            neat.DefaultReproduction,
+            neat.DefaultSpeciesSet,
+            neat.DefaultStagnation,
+            config_path,
+        )
+
+    def test_pickle_genome_config_does_not_advance_node_indexer(self):
+        gc = self.config.genome_config
+        # Prime the indexer so it is non-None.
+        first = gc.get_new_node_key({})
+        # Snapshot of the next id we would hand out before any pickling.
+        expected_next = gc.get_new_node_key({first: None})
+        gc.get_new_node_key.__self__  # keep references; no-op
+        # Reinitialize so we know exactly what comes next.
+        gc.node_indexer = None
+        a = gc.get_new_node_key({})
+        # Pickle several times; each round-trip used to consume one id.
+        for _ in range(5):
+            pickle.dumps(gc)
+        b = gc.get_new_node_key({a: None})
+        c = gc.get_new_node_key({a: None, b: None})
+        self.assertEqual(b, a + 1,
+                         f"After pickling, next node id should be {a + 1} but got {b}")
+        self.assertEqual(c, a + 2,
+                         f"Subsequent node id should be {a + 2} but got {c}")
+
+    def test_pickle_species_set_does_not_advance_indexer(self):
+        from itertools import count as _count
+        species_set = neat.DefaultSpeciesSet(self.config.species_set_config, None)
+        # The indexer starts at 1 by construction.
+        next_before = next(species_set.indexer)
+        # Rewind so the test is deterministic from a known state.
+        species_set.indexer = _count(next_before)
+        for _ in range(5):
+            pickle.dumps(species_set)
+        next_after = next(species_set.indexer)
+        self.assertEqual(next_after, next_before,
+                         f"Pickling must not advance the species indexer "
+                         f"(expected {next_before}, got {next_after})")
+
+    def test_pickled_checkpoint_round_trip_node_id_alignment(self):
+        """End-to-end: a pickle round-trip must reproduce the exact next node id."""
+        gc = self.config.genome_config
+        gc.node_indexer = None
+        a = gc.get_new_node_key({})  # advances counter by one
+        data = pickle.dumps(gc)
+        restored = pickle.loads(data)
+        live_next = gc.get_new_node_key({a: None})
+        restored_next = restored.get_new_node_key({a: None})
+        self.assertEqual(live_next, restored_next,
+                         f"Live ({live_next}) and restored ({restored_next}) "
+                         f"counters must match after pickle round-trip")
+
+
 if __name__ == '__main__':
     unittest.main()

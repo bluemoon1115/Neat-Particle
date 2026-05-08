@@ -73,8 +73,12 @@ void apply_activation(
         // square
         result = x * x;
     } else {
-        // fallback: identity
-        result = x;
+        // Unrecognized activation id. Emit NaN so callers see an obvious
+        // failure rather than a silent identity passthrough — this would
+        // otherwise hide CPU/GPU divergence if ACTIVATION_IDS is extended
+        // without updating the kernel switch above. _padding.py validates
+        // upstream, so this branch should be unreachable in practice.
+        result = nanf("");
     }
 
     z[idx] = result;
