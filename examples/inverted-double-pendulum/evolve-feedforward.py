@@ -74,7 +74,7 @@ def run(config_file):
     stats = neat.StatisticsReporter()
     pop.add_reporter(stats)
     pop.add_reporter(neat.StdOutReporter(True))
-    pop.add_reporter(neat.Checkpointer(10))
+    pop.add_reporter(neat.Checkpointer(100))
 
     # Run evolution with parallel evaluation
     pe = neat.ParallelEvaluator(multiprocessing.cpu_count(), eval_genome)
