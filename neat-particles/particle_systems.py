@@ -3,7 +3,7 @@
 import math
 import random
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Tuple
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -13,10 +13,8 @@ def _clamp(v: float, lo: float, hi: float) -> float:
 def _dist3(x: float, y: float, z: float) -> float:
     return math.sqrt(x * x + y * y + z * z)
 
-
 def _dist2(x: float, y: float) -> float:
-    return math.sqrt(x * x + y * y)
-
+    return math.sqrt(x*x + y*y)
 
 def _unit_sphere_point(rng: random.Random) -> Tuple[float, float, float]:
     # Rejection sampling inside a unit sphere.
@@ -53,25 +51,13 @@ class Particle:
     age: float = 0.0
 
 
-@dataclass
-class TrailDot:
-    x: float
-    y: float
-    z: float
-    r: float
-    g: float
-    b: float
-    ttl: float
-    age: float = 0.0
-
-
 class BaseSystem:
     name: str = "base"
 
     def reset(self, rng: random.Random) -> None:
         raise NotImplementedError
 
-    def update(self, net, dt: float, scale: float) -> None:
+    def update(self, net, dt: float, scale: float, input_transform=None) -> None:
         raise NotImplementedError
 
     def draw(self, surface, rect) -> None:
@@ -103,9 +89,11 @@ class GenericSystem(BaseSystem):
         p.age = 0.0
         p.ttl = self.rng.uniform(1.0, 3.0)
 
-    def step_particle(self, net, p: Particle, dt: float, scale: float) -> None:
+    def step_particle(self, net, p: Particle, dt: float, scale: float, input_transform=None) -> None:
         dc = _dist3(p.x, p.y, p.z)
         inputs = (p.x, p.y, p.z, dc, 1.0)  # bias
+        if input_transform is not None:
+            inputs = input_transform.apply(inputs)
         vx, vy, vz, r, g, b = net.activate(inputs)
         p.vx = _vel_from_sigmoid(vx, speed=1.0)
         p.vy = _vel_from_sigmoid(vy, speed=1.0)
@@ -139,9 +127,9 @@ class GenericSystem(BaseSystem):
         #     p.z -= 2 * b
 
 
-    def update(self, net, dt: float, scale: float) -> None:
+    def update(self, net, dt: float, scale: float, input_transform=None) -> None:
         for p in self.particles:
-            self.step_particle(net, p, dt, scale)
+            self.step_particle(net, p, dt, scale, input_transform)
 
     def draw(self, surface, rect) -> None:
         import pygame
@@ -156,6 +144,23 @@ class GenericSystem(BaseSystem):
             color = (_to_rgb01(p.r), _to_rgb01(p.g), _to_rgb01(p.b))
             pygame.draw.circle(surface, color, (px, py), 2)
 
+
+def make_system(seed: Optional[int] = None) -> BaseSystem:
+    return GenericSystem(seed=seed)
+
+
+# other particle systems
+'''
+@dataclass
+class TrailDot:
+    x: float
+    y: float
+    z: float
+    r: float
+    g: float
+    b: float
+    ttl: float
+    age: float = 0.0
 
 class TrailSystem(GenericSystem):
     name = "trail"
@@ -349,16 +354,4 @@ class PlaneSystem(BaseSystem):
             b = sum(p.b for p in corners) / 4.0
             color = (_to_rgb01(r), _to_rgb01(g), _to_rgb01(b))
             pygame.draw.polygon(surface, color, pts, 1)
-
-
-def make_system(system_name: str, seed: Optional[int] = None) -> BaseSystem:
-    name = system_name.lower().strip()
-    if name == "generic":
-        return GenericSystem(seed=seed)
-    if name == "trail":
-        return TrailSystem(seed=seed)
-    if name == "beam":
-        return BeamSystem(seed=seed)
-    if name == "plane":
-        return PlaneSystem(seed=seed)
-    raise ValueError(f"Unknown system: {system_name!r}")
+'''

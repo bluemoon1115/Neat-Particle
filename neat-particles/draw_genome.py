@@ -14,11 +14,11 @@ def _clamp(v: float, lo: float, hi: float) -> float:
 
 def _weight_to_color(weight: float):
     # green = positive, red = negative (similar to examples/visualize.py)
-    w = _clamp(weight, -5.0, 5.0)
-    t = abs(w) / 5.0
+    w = _clamp(weight, -1.0, 1.0)
+    t = abs(w)
     if w >= 0:
-        return (0, int(_lerp(120, 255, t)), 0)
-    return (int(_lerp(120, 255, t)), 0, 0)
+        return (0, int(_lerp(122, 255, t)), 0)
+    return (int(_lerp(122, 255, t)), 0, 0)
 
 
 def draw_genome(surface, rect, genome, config, font, show_disabled: bool = False) -> None:

@@ -1,3 +1,7 @@
+'''
+SPS for input transform parameters (vector size = 9)
+'''
+
 from __future__ import annotations
 
 import argparse
