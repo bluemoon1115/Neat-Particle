@@ -2,7 +2,7 @@
 
 This folder contains a lightweight, **interactive evolutionary computation (IEC)** framework inspired by the paper in this directory: `neat-particle paper.pdf`.
 
-It is designed for learning: you can browse 9 evolving particle “species” (genomes) at a time and manually select which ones breed the next generation.
+It is designed for learning: you can browse 9 evolving particle “species” (genomes) at a time, manually select which ones breed the next generation, then switch into sequential plane search (SPS) to fine-tune how inputs are fed into a chosen particle ANN.
 
 ### What you can do
 
@@ -12,8 +12,9 @@ It is designed for learning: you can browse 9 evolving particle “species” (g
 - Press `N` to generate a new batch of 9 offspring from the selected parents.
 - Press `R` to reset to a fresh random batch; press `W` to randomize weights of the current batch.
 - Press `Space` to pause/unpause time (“freeze”).
+- Press `Tab` or `B` to enter SPS mode and tune input transforms for the selected genome.
 
-### Particle system classes implemented
+### Particle system implemented
 
 Each grid cell is one NEAT genome controlling one particle-system instance.
 All particles within a system share the same genome, but the ANN is activated **once per particle per frame**.
@@ -21,14 +22,6 @@ All particles within a system share the same genome, but the ANN is activated **
 - **Generic** (`generic`): explosion/fire/smoke-like point particles.
   - Inputs: `Px, Py, Pz, Dc, Bias`
   - Outputs: `Vx, Vy, Vz, R, G, B`
-- **Trail** (`trail`): like Generic, but leaves a fading trail.
-  - Inputs/Outputs: same as **Generic**
-- **Beam** (`beam`): a curve built from moving control points.
-  - Inputs: `Px, Py, Pz, Dt, Bias`
-  - Outputs: `Vx, Vy, Vz, R, G, B`
-- **Plane** (`plane`): quads made of 4 moving corners in the XZ plane.
-  - Inputs (implemented): `Py_fixed, Px, Pz, Dc, Bias`
-  - Outputs: `Vx, Vz, R, G, B`
 
 Motion uses the linear model you specified:
 `P_t = P_{t-1} + S * V * T`
@@ -46,28 +39,80 @@ pip install pygame
 ### Run
 
 ```bash
-cd examples/neat-particles
-python interactive_neat_particles.py --system generic
-python interactive_neat_particles.py --system trail
-python interactive_neat_particles.py --system beam
-python interactive_neat_particles.py --system plane
+cd neat-particles
+python interactive_neat_particles.py
 ```
 
 ### Controls
 
+#### IEC mode
+
 - Mouse click or keys `1..9`: toggle selection for a candidate.
 - `N`: new generation (offspring from selected parents; if none selected, does nothing).
+- `B`: bind the selected candidate to SPS mode; if none is selected, candidate 1 is used.
+- `Tab`: switch to SPS mode (binds candidate 1 if no genome has been bound yet).
 - `R`: reset (new random batch of 9).
 - `W`: randomize weights (keeps topology).
 - `Space`: pause/unpause (freeze time).
 - `Esc`: quit.
+
+#### SPS mode
+
+- Mouse click or keys `1..9`: choose the preferred SPS sample and advance to the next search plane.
+- `Tab`: return to IEC mode.
+- `B`: rebind SPS to the currently selected IEC genome; if none is selected, candidate 1 is used.
+- `R`: reset the SPS search around the bound genome.
+- `Space`: pause/unpause (freeze time).
+- `Esc`: quit.
+
+### Sequential plane search mode
+
+Sequential plane search is a second interactive optimizer layered on top of the genome gallery. IEC changes the genome by breeding and mutation; SPS keeps one chosen genome fixed and searches around an input-transform vector with 9 visible samples on each plane.
+
+SPS tunes 9 normalized input-transform parameters:
+
+1. Scale for `Px`, `Py`, `Pz`, and `Dc`.
+2. Offset for `Px`, `Py`, `Pz`, and `Dc`.
+3. Replacement value for the final bias input.
+
+At runtime, the raw Generic ANN input:
+
+```text
+(Px, Py, Pz, Dc, 1.0)
+```
+
+is transformed into:
+
+```text
+(Px * sx + ox,
+ Py * sy + oy,
+ Pz * sz + oz,
+ Dc * sd + od,
+ bias_value)
+```
+
+The decoded ranges are:
+
+- `scale in [0.1, 3.0]`
+- `offset in [-1.0, 1.0]`
+- `bias_value in [-1.0, 1.0]`
+
+The genome key, topology, weights, and node biases do not change during SPS. The visual differences come from preprocessing the ANN inputs differently before `net.activate(...)`.
+
+The intended workflow is:
+
+1. Use IEC mode to evolve or find an interesting particle genome.
+2. Select that candidate and press `B` to bind it into SPS.
+3. In SPS mode, the 3x3 gallery shows the same bound genome key with 9 input-transform samples from the current search plane.
+4. Click the preferred cell; the system records that choice as better than representative points on the plane and generates the next plane around the chosen sample.
+
+This implementation follows the sequential-plane idea without adding Bayesian optimization dependencies. It uses a lightweight preference-guided acquisition approximation over the recorded choices and rejected samples.
 
 ### Notes / next steps
 
 This is intentionally a **framework**:
 - Rendering is a 2D preview (not a full 3D billboarded renderer).
 - The network drawing is a compact genome visualization (inputs at top, outputs at bottom).
-- If you want the **plane ANN** to match your earlier “4 corners” input idea, change `config-plane.ini` and update the input mapping in `PlaneSystem.update(...)` in `particle_systems.py`.
 
 ---
 
@@ -75,7 +120,6 @@ This is intentionally a **framework**:
 
 This is written as a learning note about the NEAT algorithm as implemented in this repository.
 
-Important honesty note: I did not extract text from `neat-particle paper.pdf` (there’s no PDF text-extraction tool available in this environment). The notes below are based on the actual `neat-python` core implementation in `C:\Users\jonat\neat-python\neat\` and the particle example code added in `examples/neat-particles`.
 
 ### 1) What NEAT is doing (conceptually)
 
@@ -123,7 +167,7 @@ So it intentionally does **not** call:
 Instead it calls these core pieces directly:
 
 **Config (to define genome shape + mutation rules)**
-- `neat.Config(...)` in `C:\Users\jonat\neat-python\examples\neat-particles\interactive_neat_particles.py`
+- `neat.Config(...)` in `C:\Users\jonat\neat-python\neat-particles\interactive_neat_particles.py`
 
 **Genome creation and mutation**
 - `DefaultGenome.configure_new(...)` (random initialization)
@@ -207,18 +251,18 @@ All of that logic is visible in:
 ### 5) How this example maps particle systems to ANN inputs/outputs
 
 Mappings are implemented in:
-- `C:\Users\jonat\neat-python\examples\neat-particles\particle_systems.py`
+- `C:\Users\jonat\neat-python\neat-particles\particle_systems.py`
 
-All systems use sigmoid activation (locked in the configs), so ANN outputs are typically in `[0, 1]`.
+The Generic system uses sigmoid activation (locked in the config), so ANN outputs are typically in `[0, 1]`.
 
 This example interprets outputs as:
 - velocities: remap `[0, 1] → [-1, 1]`, then scale by a speed constant
 - colors: clamp to `[0, 1]` and convert to 0–255
 
-#### Generic + Trail + Beam
+#### Generic
 
 Config:
-- `C:\Users\jonat\neat-python\examples\neat-particles\config-generic.ini`
+- `C:\Users\jonat\neat-python\neat-particles\config-generic.ini`
   - `num_inputs = 5`
   - `num_outputs = 6`
 
@@ -226,7 +270,7 @@ Input vector order:
 1. `x`
 2. `y`
 3. `z`
-4. distance (`Dc` for Generic/Trail, `Dt` for Beam)
+4. distance from center (`Dc`)
 5. bias (= `1.0`)
 
 Output vector order:
@@ -236,27 +280,6 @@ Output vector order:
 4. `R`
 5. `G`
 6. `B`
-
-#### Plane
-
-Config:
-- `C:\Users\jonat\neat-python\examples\neat-particles\config-plane.ini`
-  - `num_inputs = 5`
-  - `num_outputs = 5`
-
-Input vector order:
-1. fixed `y`
-2. `x`
-3. `z`
-4. distance from quad center (`Dc`)
-5. bias (= `1.0`)
-
-Output vector order:
-1. `Vx`
-2. `Vz`
-3. `R`
-4. `G`
-5. `B`
 
 ### 6) Meaning of the configuration options (what the knobs do)
 
@@ -360,25 +383,22 @@ If you want crossover in IEC, the next step is to use:
 ### 8) How particles are simulated and rendered in this project
 
 Simulation/rendering code:
-- `C:\Users\jonat\neat-python\examples\neat-particles\particle_systems.py`
+- `C:\Users\jonat\neat-python\neat-particles\particle_systems.py`
 
 The common loop is:
-1. For each particle (or control point / quad corner), build an input vector.
+1. For each particle, build an input vector.
 2. Call `net.activate(inputs)` to get outputs.
 3. Interpret outputs as velocity and color.
 4. Update position using: `P_t = P_{t-1} + S * V * T`.
 5. Draw a 2D preview using pygame primitives.
 
-Per-system behavior summary:
-- `GenericSystem`: independent particles, TTL respawn, position wrap bounds.
-- `TrailSystem`: adds fading trail dots behind particles.
-- `BeamSystem`: moves control points and draws a Bezier-like curve through them.
-- `PlaneSystem`: moves quad corners in XZ and draws wireframe quads.
+System behavior summary:
+- `GenericSystem`: independent particles, TTL respawn, and bounds-based respawn.
 
 ### 9) What the ANN diagram is showing
 
 Genome drawing code:
-- `C:\Users\jonat\neat-python\examples\neat-particles\draw_genome.py`
+- `C:\Users\jonat\neat-python\neat-particles\draw_genome.py`
 
 The labels next to circles are **node keys**:
 - inputs: negative IDs

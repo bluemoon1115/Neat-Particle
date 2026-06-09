@@ -36,20 +36,54 @@ def _normalize(values: Sequence[float]) -> Tuple[float, ...]:
     return tuple(v / n for v in values)
 
 
+DIMENSIONS = 9
+NON_BIAS_INPUTS = 4
+
+
 @dataclass(frozen=True)
-class SearchVector:
-    """Normalized SPS vector for Generic genome weight tuning."""
-    # vector that stores the input transform parameters
+class InputTransform:
+    """Normalized SPS vector for Generic ANN input transforms."""
     vector: Tuple[float, ...]
 
     def __post_init__(self) -> None:
         # sets the vector in bound right after initializing by clamp function
+        if len(self.vector) != DIMENSIONS:
+            raise ValueError(f"InputTransform needs {DIMENSIONS} values, got {len(self.vector)}")
         object.__setattr__(self, "vector", _clamp_vector(self.vector))
+
+    @classmethod
+    def identity(cls) -> "InputTransform":
+        """Return scale=1, offset=0, bias=1 in normalized coordinates."""
+        scale = (1.0 - 0.1) / (3.0 - 0.1)
+        return cls((scale, scale, scale, scale, 0.5, 0.5, 0.5, 0.5, 1.0))
 
     # use classmethod and cls so the function can still be called without instance being created
     @classmethod
-    def from_vector(cls, vector: Sequence[float]) -> "SearchVector":
+    def from_vector(cls, vector: Sequence[float]) -> "InputTransform":
         return cls(tuple(vector))
+
+    def decoded(self) -> Tuple[Tuple[float, ...], Tuple[float, ...], float]:
+        """Decode normalized values into scales, offsets, and bias value."""
+        scales = tuple(0.1 + value * 2.9 for value in self.vector[:NON_BIAS_INPUTS])
+        offsets = tuple(-1.0 + value * 2.0 for value in self.vector[NON_BIAS_INPUTS:NON_BIAS_INPUTS * 2])
+        bias = -1.0 + self.vector[-1] * 2.0
+        return scales, offsets, bias
+
+    def apply(self, inputs: Sequence[float]) -> Tuple[float, ...]:
+        """Apply scale/offset preprocessing before the ANN sees particle inputs."""
+        if len(inputs) != 5:
+            raise ValueError(f"InputTransform expects 5 ANN inputs, got {len(inputs)}")
+        scales, offsets, bias = self.decoded()
+        transformed = [value * scale + offset for value, scale, offset in zip(inputs[:4], scales, offsets)]
+        transformed.append(bias)
+        return tuple(transformed)
+
+    def short_label(self) -> str:
+        """Return a compact label for the SPS gallery."""
+        scales, offsets, bias = self.decoded()
+        avg_scale = sum(scales) / len(scales)
+        avg_offset = sum(offsets) / len(offsets)
+        return f"s={avg_scale:.2f} o={avg_offset:+.2f} b={bias:+.2f}"
 
 
 @dataclass(frozen=True)
@@ -60,7 +94,7 @@ class PreferenceRecord:
 
 @dataclass(frozen=True)
 class PlaneSample:
-    transform: object
+    transform: InputTransform
     u_coeff: int
     v_coeff: int
 
@@ -77,14 +111,12 @@ class SequentialPlaneSearch:
     
     """
 
-    def __init__(self, dimensions: int, start_vector: Sequence[float],
+    def __init__(self, start_vector: Optional[Sequence[float]] = None,
                  seed: Optional[int] = None, plane_radius: float = 0.22):
-        if dimensions < 1:
-            raise ValueError("SequentialPlaneSearch needs at least one dimension")
         self.rng = random.Random(seed)
         self.plane_radius = plane_radius
-        self.dimensions = dimensions
-        self.default_start = self._default_start(start_vector)
+        self.dimensions = DIMENSIONS
+        self.default_start = self._default_start(start_vector or InputTransform.identity().vector)
         self.history: List[PreferenceRecord] = []
         self.x_plus: Tuple[float, ...] = self.default_start
         self.current_samples: List[PlaneSample] = []
@@ -120,7 +152,7 @@ class SequentialPlaneSearch:
         self.x_plus = chosen
         self.generate_plane()
 
-    def transforms(self) -> List[object]:
+    def transforms(self) -> List[InputTransform]:
         """Return the current 3x3 gallery samples."""
         return [sample.transform for sample in self.current_samples]
 
@@ -149,7 +181,7 @@ class SequentialPlaneSearch:
         samples: List[PlaneSample] = []
         for u_coeff, v_coeff in coeffs:
             vector = tuple(center[i] + u_coeff * u[i] + v_coeff * v[i] for i in range(self.dimensions))
-            samples.append(PlaneSample(SearchVector.from_vector(vector), u_coeff, v_coeff))
+            samples.append(PlaneSample(InputTransform.from_vector(vector), u_coeff, v_coeff))
 
         representatives = [
             center,

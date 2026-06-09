@@ -17,11 +17,6 @@ __pycache__/
 # pycharm cache folder
 .idea/
 
-examples/openai-lander/results/
-examples/openai-walker/results/
-examples/picture2d/*.bin
-examples/picture2d/*.png
-examples/picture2d/rendered/
 venv
 
 *.gv
@@ -42,18 +37,4 @@ RESEARCH.md
 adversarial-loop/
 autoloop/
 
-examples/bipedal-walker/
-examples/export/
-examples/hopper/
-examples/inverted-double-pendulum/
-examples/lorenz-ctrnn/
-examples/lunar-lander/
-examples/memory-fixed/
-examples/memory-variable/
-examples/neuron-demo/
-examples/parallel-reproducible/
-examples/pricture2d/
-examples/signal-tracking-gpu/
-examples/single-pole-balancing/
-examples/spike-timing-gpu/
-examples/xor/
+examples/
