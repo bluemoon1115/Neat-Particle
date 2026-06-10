@@ -5,21 +5,24 @@ import copy
 import os
 import random
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Sequence, Tuple
 
 import neat
 from neat.innovation import InnovationTracker
 
 from draw_genome import draw_genome
 from particle_systems import BaseSystem, make_system
+from sequential_plane_search import SearchVector, SequentialPlaneSearch
 
 
 @dataclass
 class Candidate:
     index: int
+    species_key: int
     genome: neat.DefaultGenome
     net: object
     system: BaseSystem
+    label: Optional[str] = None
     selected: bool = False
 
 
@@ -40,15 +43,15 @@ class InteractiveBreeder:
         self.next_key = 1
 
     def _new_key(self) -> int:
-        k = self.next_key
+        key = self.next_key
         self.next_key += 1
-        return k
+        return key
 
     def create_random_genome(self) -> neat.DefaultGenome:
         self.genome_config.innovation_tracker = self.innovation_tracker
-        g = neat.DefaultGenome(self._new_key())
-        g.configure_new(self.genome_config)
-        return g
+        genome = neat.DefaultGenome(self._new_key())
+        genome.configure_new(self.genome_config)
+        return genome
 
     def clone_and_mutate(self, parent: neat.DefaultGenome) -> neat.DefaultGenome:
         self.genome_config.innovation_tracker = self.innovation_tracker
@@ -59,25 +62,23 @@ class InteractiveBreeder:
         return child
 
     def randomize_weights(self, genome: neat.DefaultGenome) -> None:
-        # A "refresh with different weights" button: keep topology but randomize weights/biases.
-        for cg in genome.connections.values():
-            cg.weight = self.rng.uniform(-1.0, 1.0)
-        for ng in genome.nodes.values():
-            ng.bias = self.rng.uniform(-1.0, 1.0)
+        # Refresh weights and node biases while preserving topology.
+        for connection in genome.connections.values():
+            connection.weight = self.rng.uniform(-1.0, 1.0)
+        for node in genome.nodes.values():
+            node.bias = self.rng.uniform(-1.0, 1.0)
 
     def spawn_generation(self, parents: List[neat.DefaultGenome], n: int = 9, keep_elites: bool = True) -> List[neat.DefaultGenome]:
-        # Reset generation-specific innovation dedup tracking (matches DefaultReproduction behavior).
+        # Reset generation-specific innovation dedup tracking.
         self.innovation_tracker.reset_generation()
 
         if not parents:
             return [self.create_random_genome() for _ in range(n)]
 
         out: List[neat.DefaultGenome] = []
-
         if keep_elites:
-            # Copy selected genomes through unchanged (still assign fresh keys).
-            for p in parents[: min(len(parents), n)]:
-                elite = copy.deepcopy(p)
+            for parent in parents[: min(len(parents), n)]:
+                elite = copy.deepcopy(parent)
                 elite.key = self._new_key()
                 elite.fitness = None
                 out.append(elite)
@@ -89,32 +90,15 @@ class InteractiveBreeder:
         return out[:n]
 
 
-def _config_path_for_system(system: str, base_dir: str) -> str:
-    system = system.lower().strip()
-    if system == "plane":
-        return os.path.join(base_dir, "config-plane.ini")
-    return os.path.join(base_dir, "config-generic.ini")
-
-
 def main() -> int:
-# execution arguments
     parser = argparse.ArgumentParser()
-    parser.add_argument("--system", choices=["generic", "trail", "beam", "plane"], default="generic")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--fps", type=int, default=60)
     parser.add_argument("--scale", type=float, default=0.45, help="S in P_t = P_{t-1} + S*V*T")
     args = parser.parse_args()
 
-# pygame debug
-    try:
-        import pygame
-    except Exception as e:  # pragma: no cover
-        print("pygame is required for this example. Install it with: pip install pygame")
-        print(f"Import error: {e}")
-        return 2
-# calls for config files for plane or generic system
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    cfg_path = _config_path_for_system(args.system, base_dir)
+    cfg_path = os.path.join(base_dir, "config-generic.ini")
 
     config = neat.Config(
         neat.DefaultGenome,
@@ -125,57 +109,218 @@ def main() -> int:
     )
 
     breeder = InteractiveBreeder(config, seed=args.seed)
+    # weight_lo = float(config.genome_config.weight_min_value)
+    # weight_hi = float(config.genome_config.weight_max_value)
+    weight_lo = -8.0
+    weight_hi = 8.0
 
-# setup for the GUI
+    try:
+        import pygame
+    except Exception as exc:  # pragma: no cover
+        print("pygame is required for this example. Install it with: pip install pygame")
+        print(f"Import error: {exc}")
+        return 2
+
     pygame.init()
-    pygame.display.set_caption(f"NEAT Particles (IEC) - {args.system}")
-    screen = pygame.display.set_mode((1200, 900))
+    pygame.display.set_caption("NEAT Particles (Connection weight SPS)")
+    screen = pygame.display.set_mode((1300, 720), pygame.RESIZABLE)
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("consolas", 14)
     small = pygame.font.SysFont("consolas", 12)
 
-    def make_candidate(idx: int, genome) -> Candidate:
-        net = neat.nn.FeedForwardNetwork.create(genome, config)
-        system = make_system(args.system, seed=(args.seed or 0) + idx * 1337)
-        return Candidate(index=idx, genome=genome, net=net, system=system)
+    def normalize_weight(weight: float) -> float:
+        """Map a real genome weight into the normalized SPS interval."""
+        if weight_hi <= weight_lo:
+            return 0.5
+        clamped = max(weight_lo, min(weight_hi, weight))
+        return (clamped - weight_lo) / (weight_hi - weight_lo)
 
-    def build_batch(genomes) -> List[Candidate]:
-        cands: List[Candidate] = []
-        for i, g in enumerate(genomes, start=1):
-            cands.append(make_candidate(i, g))
-        return cands
+    def decode_weight(value: float) -> float:
+        """Map one normalized SPS coordinate back into a genome weight."""
+        return weight_lo + max(0.0, min(1.0, value)) * (weight_hi - weight_lo)
+
+    def generic_weight_slots(genome: neat.DefaultGenome) -> List[Tuple[int, int]]:
+        """Select Generic Dc-input and Bias-input connection weights for SPS."""
+        input_keys = config.genome_config.input_keys
+        distance_key = input_keys[3]
+        bias_input_key = input_keys[4]
+        preferred_inputs = {distance_key, bias_input_key}
+
+        slots = [key for key, connection in sorted(genome.connections.items()) if connection.enabled and key[0] in preferred_inputs]
+        return slots
+
+        # Fallback prevents SPS from breaking if mutations deleted/disabled preferred links.
+        return [key for key, connection in sorted(genome.connections.items()) if connection.enabled] or sorted(genome.connections)
+
+    def genome_to_weight_vector(genome: neat.DefaultGenome, slots: Sequence[Tuple[int, int]]) -> Tuple[float, ...]:
+        """Read selected genome weights and normalize them for SPS."""
+        return tuple(normalize_weight(genome.connections[key].weight) for key in slots)
+
+    def apply_weight_vector(
+        genome: neat.DefaultGenome,
+        slots: Sequence[Tuple[int, int]],
+        search_vector: SearchVector,
+    ) -> neat.DefaultGenome:
+        """Create one SPS genome variant by decoding vector values into weights."""
+        variant = copy.deepcopy(genome)
+        for key, value in zip(slots, search_vector.vector):
+            if key in variant.connections:
+                variant.connections[key].weight = decode_weight(value)
+        variant.fitness = None
+        return variant
+
+    def weight_summary(genome: neat.DefaultGenome, slots: Sequence[Tuple[int, int]]) -> str:
+        """Return a compact label showing the tuned Dc/Bias weight averages."""
+        input_keys = config.genome_config.input_keys
+        distance_key = input_keys[3]
+        bias_input_key = input_keys[4]
+        distance_weights = [genome.connections[key].weight for key in slots if key[0] == distance_key]
+        bias_weights = [genome.connections[key].weight for key in slots if key[0] == bias_input_key]
+
+        def avg(values: Sequence[float]) -> float:
+            return sum(values) / len(values) if values else 0.0
+
+        return f"Dc={avg(distance_weights):+.2f} Bias={avg(bias_weights):+.2f}"
+
+    def make_candidate(
+        idx: int,
+        genome,
+        system_seed: Optional[int] = None,
+        label: Optional[str] = None,
+        species_key: Optional[int] = None,
+    ) -> Candidate:
+        """Build the renderable particle candidate for one genome."""
+        net = neat.nn.FeedForwardNetwork.create(genome, config)
+        seed = system_seed if system_seed is not None else (args.seed or 0) + idx * 1337
+        system = make_system(seed=seed)
+        return Candidate(index=idx, species_key=species_key or idx, genome=genome, net=net, system=system, label=label)
+
+    def build_batch(genomes, key_start: int = 1) -> List[Candidate]:
+        """Build the normal IEC gallery from a list of genomes."""
+        return [
+            make_candidate(i, genome, species_key=key_start + i - 1)
+            for i, genome in enumerate(genomes, start=1)
+        ]
 
     candidates = build_batch([breeder.create_random_genome() for _ in range(9)])
+    mode = "IEC"
+    sps_search: Optional[SequentialPlaneSearch] = None
+    sps_bound_genome: Optional[neat.DefaultGenome] = None
+    sps_bound_species_key = 1
+    sps_weight_slots: List[Tuple[int, int]] = []
+    sps_candidates: List[Candidate] = []
     paused = False
+    show_legend = False
     generation = 0
 
-    # Grid layout.
     margin = 12
-    cell_w = (screen.get_width() - margin * 4) // 3
-    cell_h = (screen.get_height() - margin * 4 - 70) // 3
     bottom_h = 70
 
     def cell_rect(i: int):
-        # i: 0..8
+        """Return the current rectangle for one 3x3 gallery cell."""
+        usable_w = screen.get_width() - margin * 4
+        usable_h = screen.get_height() - margin * 4 - bottom_h
+        cell_w = usable_w // 3
+        cell_h = usable_h // 3
         row = i // 3
         col = i % 3
         x = margin + col * (cell_w + margin)
         y = margin + row * (cell_h + margin)
         return (x, y, cell_w, cell_h)
 
-    def candidate_at_pos(pos):
+    def active_candidates() -> List[Candidate]:
+        """Return the gallery candidates for the current interaction mode."""
+        return sps_candidates if mode == "SPS" else candidates
+
+    def candidate_index_at_pos(pos) -> int:
+        """Convert a mouse position into a gallery index."""
         mx, my = pos
-        for i, c in enumerate(candidates):
+        for i, _candidate in enumerate(active_candidates()):
             x, y, w, h = cell_rect(i)
             if x <= mx <= x + w and y <= my <= y + h:
-                return c
-        return None
+                return i
+        return -1
+
+    def build_sps_batch(bound_genome: neat.DefaultGenome, seed: Optional[int]) -> List[Candidate]:
+        """Build the 3x3 SPS gallery from weight-tuned genome variants."""
+        shared_seed = (seed or 0) + 67
+        batch = []
+        for i, search_vector in enumerate(sps_search.transforms()):
+            variant = apply_weight_vector(bound_genome, sps_weight_slots, search_vector)
+            label = f"base={bound_genome.key} {weight_summary(variant, sps_weight_slots)}"
+            batch.append(make_candidate(
+                i + 1,
+                variant,
+                system_seed=shared_seed,
+                label=label,
+                species_key=sps_bound_species_key,
+            ))
+        return batch
+
+    def bind_sps_to_selection() -> None:
+        """Bind SPS to the selected IEC genome, or candidate 1 if none is selected."""
+        nonlocal mode, sps_bound_genome, sps_bound_species_key, sps_weight_slots, sps_search, sps_candidates
+        selected_indices = [i for i, candidate in enumerate(candidates) if candidate.selected]
+        source = candidates[selected_indices[0] if selected_indices else 0]
+        sps_bound_genome = copy.deepcopy(source.genome)
+        sps_bound_species_key = source.species_key
+        sps_weight_slots = generic_weight_slots(sps_bound_genome)
+        start_vector = genome_to_weight_vector(sps_bound_genome, sps_weight_slots)
+        sps_search = SequentialPlaneSearch(len(sps_weight_slots), start_vector, seed=args.seed)
+        sps_candidates = build_sps_batch(sps_bound_genome, args.seed)
+        mode = "SPS"
+
+    def reset_current_mode() -> None:
+        """Reset only the active interaction mode."""
+        nonlocal candidates, sps_candidates, generation
+        if mode == "IEC":
+            generation = 0
+            candidates = build_batch([breeder.create_random_genome() for _ in range(9)])
+            return
+
+        if sps_bound_genome is None:
+            bind_sps_to_selection()
+            return
+
+        start_vector = genome_to_weight_vector(sps_bound_genome, sps_weight_slots)
+        sps_search.reset(start_vector)
+        sps_candidates = build_sps_batch(sps_bound_genome, args.seed)
+
+    def choose_sps_sample(idx: int) -> None:
+        """Accept one SPS sample as preferred and generate the next search plane."""
+        nonlocal sps_bound_genome, sps_candidates
+        if sps_bound_genome is None:
+            bind_sps_to_selection()
+        sps_search.observe(idx)
+        sps_bound_genome = copy.deepcopy(sps_candidates[idx].genome)
+        sps_candidates = build_sps_batch(sps_bound_genome, args.seed)
+
+    def draw_legend() -> None:
+        """Draw a simple keyboard-control popup over the gallery."""
+        overlay = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 150))
+        screen.blit(overlay, (0, 0))
+        box_w, box_h = 620, 260
+        box_x = (screen.get_width() - box_w) // 2
+        box_y = (screen.get_height() - box_h) // 2
+        pygame.draw.rect(screen, (28, 28, 34), (box_x, box_y, box_w, box_h), 0)
+        pygame.draw.rect(screen, (120, 180, 240), (box_x, box_y, box_w, box_h), 2)
+        lines = [
+            "Controls",
+            "1..9 / Click: IEC selects candidates; SPS chooses preferred sample",
+            "Tab: switch IEC/SPS   B: bind SPS to selected IEC genome",
+            "N: breed selected IEC genomes   W: randomize IEC weights",
+            "R: reset current mode   Space: pause   L: toggle this legend",
+            "SPS tunes enabled Generic connections from Dc and Bias inputs.",
+        ]
+        for row, line in enumerate(lines):
+            color = (240, 240, 240) if row == 0 else (210, 210, 210)
+            screen.blit(font.render(line, True, color), (box_x + 24, box_y + 24 + row * 32))
 
     running = True
     while running:
         dt = clock.tick(args.fps) / 1000.0
 
-# in game key events
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
@@ -184,65 +329,89 @@ def main() -> int:
                     running = False
                 elif event.key == pygame.K_SPACE:
                     paused = not paused
+                elif event.key == pygame.K_l:
+                    show_legend = not show_legend
+                elif event.key == pygame.K_TAB:
+                    if mode == "IEC":
+                        bind_sps_to_selection()
+                    else:
+                        mode = "IEC"
+                elif event.key == pygame.K_b:
+                    bind_sps_to_selection()
                 elif event.key == pygame.K_r:
-                    generation = 0
-                    candidates = build_batch([breeder.create_random_genome() for _ in range(9)])
-                elif event.key == pygame.K_w:
-                    for c in candidates:
-                        breeder.randomize_weights(c.genome)
-                        c.net = neat.nn.FeedForwardNetwork.create(c.genome, config)
-                elif event.key == pygame.K_n:
-                    parents = [c.genome for c in candidates if c.selected]
+                    reset_current_mode()
+                elif event.key == pygame.K_w and mode == "IEC":
+                    for candidate in candidates:
+                        breeder.randomize_weights(candidate.genome)
+                        candidate.net = neat.nn.FeedForwardNetwork.create(candidate.genome, config)
+                elif event.key == pygame.K_n and mode == "IEC":
+                    parents = [candidate.genome for candidate in candidates if candidate.selected]
                     if parents:
                         generation += 1
-                        new_genomes = breeder.spawn_generation(parents, n=9, keep_elites=True)
-                        candidates = build_batch(new_genomes)
-                else:
-                    # 1..9 toggles selection.
-                    if pygame.K_1 <= event.key <= pygame.K_9:
-                        idx = event.key - pygame.K_1
-                        if 0 <= idx < len(candidates):
-                            candidates[idx].selected = not candidates[idx].selected
+                        candidates = build_batch(
+                            breeder.spawn_generation(parents, n=9, keep_elites=True),
+                            key_start=generation * 9 + 1,
+                        )
+                elif pygame.K_1 <= event.key <= pygame.K_9:
+                    idx = event.key - pygame.K_1
+                    if mode == "SPS" and 0 <= idx < len(sps_candidates):
+                        choose_sps_sample(idx)
+                    elif mode == "IEC" and 0 <= idx < len(candidates):
+                        candidates[idx].selected = not candidates[idx].selected
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                c = candidate_at_pos(event.pos)
-                if c is not None:
-                    c.selected = not c.selected
+                idx = candidate_index_at_pos(event.pos)
+                if idx >= 0:
+                    if mode == "IEC":
+                        candidates[idx].selected = not candidates[idx].selected
+                    else:
+                        choose_sps_sample(idx)
 
         if not paused:
-            for c in candidates:
-                c.system.update(c.net, dt=dt, scale=args.scale)
+            for candidate in active_candidates():
+                candidate.system.update(candidate.net, dt=dt, scale=args.scale)
 
-        # Draw.
         screen.fill((18, 18, 22))
 
-        for i, c in enumerate(candidates):
+        for i, candidate in enumerate(active_candidates()):
             x, y, w, h = cell_rect(i)
-            border = (240, 220, 120) if c.selected else (70, 70, 80)
+            if mode == "IEC":
+                border = (240, 220, 120) if candidate.selected else (70, 70, 80)
+            else:
+                border = (120, 180, 240) if i == 4 else (70, 70, 80)
             pygame.draw.rect(screen, border, (x, y, w, h), 2)
 
-            # Split: left = particle preview, right = genome diagram.
             left_w = int(w * 0.62)
             preview = (x + 6, y + 6, left_w - 12, h - 12)
             netrect = (x + left_w, y + 6, w - left_w - 6, h - 12)
 
-            # Backgrounds.
             pygame.draw.rect(screen, (10, 10, 14), preview, 0)
             pygame.draw.rect(screen, (12, 12, 16), netrect, 0)
 
-            c.system.draw(screen, preview)
-            draw_genome(screen, netrect, c.genome, config, small)
+            candidate.system.draw(screen, preview)
+            draw_genome(screen, netrect, candidate.genome, config, small)
 
-            title = f"{c.index}: key={c.genome.key}"
-            txt = font.render(title, True, (220, 220, 220))
-            screen.blit(txt, (x + 8, y + 6))
+            title = (
+                f"key={candidate.species_key}: {candidate.label}"
+                if candidate.label
+                else f"key={candidate.species_key}: genome={candidate.genome.key}"
+            )
+            screen.blit(font.render(title, True, (220, 220, 220)), (x + 8, y + 6))
 
-        # Bottom help/status bar.
         bar_y = screen.get_height() - bottom_h
         pygame.draw.rect(screen, (12, 12, 16), (0, bar_y, screen.get_width(), bottom_h), 0)
-        status = f"system={args.system}  generation={generation}  paused={paused}"
-        help1 = "click / 1..9: select   N: new gen   R: reset   W: randomize weights   Space: pause   Esc: quit"
-        screen.blit(font.render(status, True, (230, 230, 230)), (12, bar_y + 10))
+        if mode == "SPS":
+            bound_key = sps_bound_species_key if sps_bound_genome is not None else "none"
+            steps = len(sps_search.history) if sps_search is not None else 0
+            status = f"mode=SPS-weight  system=generic  bound_key={bound_key}  slots={len(sps_weight_slots)}  sps_steps={steps}  paused={paused}"
+            help1 = "click / 1..9: choose preferred sample   Tab: IEC   B: rebind genome   R: reset SPS   L: legend"
+        else:
+            status = f"mode=IEC  system=generic  generation={generation}  paused={paused}"
+            help1 = "click / 1..9: select   N: new gen   B/Tab: SPS bind   R: reset   W: randomize weights   L: legend"
+        screen.blit(font.render(status, True, (230, 230, 230)), (12, bar_y + 15))
         screen.blit(font.render(help1, True, (200, 200, 200)), (12, bar_y + 32))
+
+        if show_legend:
+            draw_legend()
 
         pygame.display.flip()
 
@@ -252,4 +421,3 @@ def main() -> int:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
-

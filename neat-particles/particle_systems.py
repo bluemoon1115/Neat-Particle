@@ -1,9 +1,7 @@
-# from __future__ import annotations
-
 import math
 import random
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Tuple
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -13,10 +11,8 @@ def _clamp(v: float, lo: float, hi: float) -> float:
 def _dist3(x: float, y: float, z: float) -> float:
     return math.sqrt(x * x + y * y + z * z)
 
-
 def _dist2(x: float, y: float) -> float:
-    return math.sqrt(x * x + y * y)
-
+    return math.sqrt(x*x + y*y)
 
 def _unit_sphere_point(rng: random.Random) -> Tuple[float, float, float]:
     # Rejection sampling inside a unit sphere.
@@ -50,18 +46,6 @@ class Particle:
     g: float = 1.0
     b: float = 1.0
     ttl: float = 2.0
-    age: float = 0.0
-
-
-@dataclass
-class TrailDot:
-    x: float
-    y: float
-    z: float
-    r: float
-    g: float
-    b: float
-    ttl: float
     age: float = 0.0
 
 
@@ -157,6 +141,22 @@ class GenericSystem(BaseSystem):
             pygame.draw.circle(surface, color, (px, py), 2)
 
 
+def make_system(seed: Optional[int] = None) -> BaseSystem:
+    return GenericSystem(seed=seed)
+
+# other particle systems
+'''
+@dataclass
+class TrailDot:
+    x: float
+    y: float
+    z: float
+    r: float
+    g: float
+    b: float
+    ttl: float
+    age: float = 0.0
+
 class TrailSystem(GenericSystem):
     name = "trail"
 
@@ -201,7 +201,6 @@ class TrailSystem(GenericSystem):
                 pygame.draw.circle(surface, color, (px, py), 1)
 
         super().draw(surface, rect)
-
 
 class BeamSystem(BaseSystem):
     name = "beam"
@@ -279,7 +278,6 @@ class BeamSystem(BaseSystem):
             color = (_to_rgb01(p.r), _to_rgb01(p.g), _to_rgb01(p.b))
             pygame.draw.circle(surface, color, (px, py), 3)
 
-
 class PlaneSystem(BaseSystem):
     name = "plane"
 
@@ -349,16 +347,4 @@ class PlaneSystem(BaseSystem):
             b = sum(p.b for p in corners) / 4.0
             color = (_to_rgb01(r), _to_rgb01(g), _to_rgb01(b))
             pygame.draw.polygon(surface, color, pts, 1)
-
-
-def make_system(system_name: str, seed: Optional[int] = None) -> BaseSystem:
-    name = system_name.lower().strip()
-    if name == "generic":
-        return GenericSystem(seed=seed)
-    if name == "trail":
-        return TrailSystem(seed=seed)
-    if name == "beam":
-        return BeamSystem(seed=seed)
-    if name == "plane":
-        return PlaneSystem(seed=seed)
-    raise ValueError(f"Unknown system: {system_name!r}")
+'''

@@ -52,8 +52,9 @@ examples/memory-fixed/
 examples/memory-variable/
 examples/neuron-demo/
 examples/parallel-reproducible/
-examples/pricture2d/
+examples/picture2d/
 examples/signal-tracking-gpu/
 examples/single-pole-balancing/
 examples/spike-timing-gpu/
 examples/xor/
+examples
