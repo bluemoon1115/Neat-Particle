@@ -1,3 +1,7 @@
+'''
+SPS for input transform parameters (vector size = 9)
+'''
+
 from __future__ import annotations
 
 import argparse
@@ -7,14 +11,12 @@ import random
 from dataclasses import dataclass
 from typing import List, Optional
 import pygame
-import pygame
 
 import neat
 from neat.innovation import InnovationTracker
 
 from draw_genome import draw_genome
 from particle_systems import BaseSystem, make_system
-from sequential_plane_search import InputTransform, SequentialPlaneSearch
 from sequential_plane_search import InputTransform, SequentialPlaneSearch
 
 
@@ -118,7 +120,7 @@ def main() -> int:
 
 # setup for the GUI
     pygame.init()
-    pygame.display.set_caption("NEAT Particles Transform Par")
+    pygame.display.set_caption("NEAT Particles")
     screen = pygame.display.set_mode((1300, 720), pygame.RESIZABLE)
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("consolas", 14)
@@ -157,7 +159,6 @@ def main() -> int:
 
     def cell_rect(i: int):
         # defines the cell box position
-        # defines the cell box position
         # i: 0..8
         row = i // 3
         col = i % 3
@@ -180,8 +181,7 @@ def main() -> int:
         shared_seed = (seed or 0) + 67
         batch = []
         for i, transform in enumerate(sps_search.transforms()):
-            # label = f"key={bound_genome.key} {transform.short_label()}" --> shows info of the average scale, offset, and bias 
-            label = f"key={bound_genome.key}"
+            label = f"key={bound_genome.key} {transform.short_label()}"
             batch.append(make_candidate(i + 1, bound_genome, system_seed=shared_seed,
                                         input_transform=transform, label=label))
         return batch
