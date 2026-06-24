@@ -109,10 +109,8 @@ def main() -> int:
     )
 
     breeder = InteractiveBreeder(config, seed=args.seed)
-    # weight_lo = float(config.genome_config.weight_min_value)
-    # weight_hi = float(config.genome_config.weight_max_value)
-    weight_lo = -8.0
-    weight_hi = 8.0
+    weight_lo = float(config.genome_config.weight_min_value)
+    weight_hi = float(config.genome_config.weight_max_value)
 
     try:
         import pygame
@@ -142,9 +140,12 @@ def main() -> int:
     def generic_weight_slots(genome: neat.DefaultGenome) -> List[Tuple[int, int]]:
         """Select Generic Dc-input and Bias-input connection weights for SPS."""
         input_keys = config.genome_config.input_keys
+        r_key = input_keys[0]
+        g_key = input_keys[1]
+        b_key = input_keys[2]
         distance_key = input_keys[3]
         bias_input_key = input_keys[4]
-        preferred_inputs = {distance_key, bias_input_key}
+        preferred_inputs = {r_key, g_key, b_key}
 
         slots = [key for key, connection in sorted(genome.connections.items()) if connection.enabled and key[0] in preferred_inputs]
         return slots
@@ -210,7 +211,6 @@ def main() -> int:
     sps_weight_slots: List[Tuple[int, int]] = []
     sps_candidates: List[Candidate] = []
     paused = False
-    show_legend = False
     generation = 0
 
     margin = 12
@@ -247,7 +247,8 @@ def main() -> int:
         batch = []
         for i, search_vector in enumerate(sps_search.transforms()):
             variant = apply_weight_vector(bound_genome, sps_weight_slots, search_vector)
-            label = f"base={bound_genome.key} {weight_summary(variant, sps_weight_slots)}"
+            # detail information of the SPS species
+            label = f"base={weight_summary(variant, sps_weight_slots)}"
             batch.append(make_candidate(
                 i + 1,
                 variant,
@@ -295,28 +296,6 @@ def main() -> int:
         sps_bound_genome = copy.deepcopy(sps_candidates[idx].genome)
         sps_candidates = build_sps_batch(sps_bound_genome, args.seed)
 
-    def draw_legend() -> None:
-        """Draw a simple keyboard-control popup over the gallery."""
-        overlay = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 150))
-        screen.blit(overlay, (0, 0))
-        box_w, box_h = 620, 260
-        box_x = (screen.get_width() - box_w) // 2
-        box_y = (screen.get_height() - box_h) // 2
-        pygame.draw.rect(screen, (28, 28, 34), (box_x, box_y, box_w, box_h), 0)
-        pygame.draw.rect(screen, (120, 180, 240), (box_x, box_y, box_w, box_h), 2)
-        lines = [
-            "Controls",
-            "1..9 / Click: IEC selects candidates; SPS chooses preferred sample",
-            "Tab: switch IEC/SPS   B: bind SPS to selected IEC genome",
-            "N: breed selected IEC genomes   W: randomize IEC weights",
-            "R: reset current mode   Space: pause   L: toggle this legend",
-            "SPS tunes enabled Generic connections from Dc and Bias inputs.",
-        ]
-        for row, line in enumerate(lines):
-            color = (240, 240, 240) if row == 0 else (210, 210, 210)
-            screen.blit(font.render(line, True, color), (box_x + 24, box_y + 24 + row * 32))
-
     running = True
     while running:
         dt = clock.tick(args.fps) / 1000.0
@@ -329,8 +308,6 @@ def main() -> int:
                     running = False
                 elif event.key == pygame.K_SPACE:
                     paused = not paused
-                elif event.key == pygame.K_l:
-                    show_legend = not show_legend
                 elif event.key == pygame.K_TAB:
                     if mode == "IEC":
                         bind_sps_to_selection()
@@ -393,7 +370,7 @@ def main() -> int:
             title = (
                 f"key={candidate.species_key}: {candidate.label}"
                 if candidate.label
-                else f"key={candidate.species_key}: genome={candidate.genome.key}"
+                else f"key={candidate.species_key}"
             )
             screen.blit(font.render(title, True, (220, 220, 220)), (x + 8, y + 6))
 
@@ -402,16 +379,14 @@ def main() -> int:
         if mode == "SPS":
             bound_key = sps_bound_species_key if sps_bound_genome is not None else "none"
             steps = len(sps_search.history) if sps_search is not None else 0
-            status = f"mode=SPS-weight  system=generic  bound_key={bound_key}  slots={len(sps_weight_slots)}  sps_steps={steps}  paused={paused}"
-            help1 = "click / 1..9: choose preferred sample   Tab: IEC   B: rebind genome   R: reset SPS   L: legend"
+            status = f"mode=SPS-weight  system=generic  bound_key={bound_key}  weight slots={len(sps_weight_slots)}  sps_steps={steps}  paused={paused}"
+            help1 = "click / 1..9: choose preferred sample   Tab: IEC   B: rebind genome   R: reset SPS"
         else:
             status = f"mode=IEC  system=generic  generation={generation}  paused={paused}"
-            help1 = "click / 1..9: select   N: new gen   B/Tab: SPS bind   R: reset   W: randomize weights   L: legend"
+            help1 = "click / 1..9: select   N: new gen   B/Tab: SPS bind   R: reset   W: randomize weights"
         screen.blit(font.render(status, True, (230, 230, 230)), (12, bar_y + 15))
         screen.blit(font.render(help1, True, (200, 200, 200)), (12, bar_y + 32))
 
-        if show_legend:
-            draw_legend()
 
         pygame.display.flip()
 
