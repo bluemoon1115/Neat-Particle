@@ -1,9 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-import math
 import random
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
+
+from bayesian_preference_optimizer import PreferentialBayesianOptimizer
 
 EPSILON = 1e-6
 
@@ -17,11 +18,11 @@ def _clamp_vector(values: Sequence[float]) -> Tuple[float, ...]:
 
 
 def _distance(a: Sequence[float], b: Sequence[float]) -> float:
-    return math.sqrt(sum((x - y) * (x - y) for x, y in zip(a, b)))
+    return sum((x - y) * (x - y) for x, y in zip(a, b)) ** 0.5
 
 
 def _norm(values: Sequence[float]) -> float:
-    return math.sqrt(sum(value * value for value in values))
+    return sum(value * value for value in values) ** 0.5
 
 
 def _dot(a: Sequence[float], b: Sequence[float]) -> float:
@@ -86,11 +87,13 @@ class SequentialPlaneSearch:
         self.x_plus: Tuple[float, ...] = self.default_start
         self.current_samples: List[PlaneSample] = []
         self.representatives: List[Tuple[float, ...]] = []
+        self.optimizer = PreferentialBayesianOptimizer(dimensions)
         self.generate_plane()
 
     def reset(self, start_vector: Optional[Sequence[float]] = None) -> None:
         """Clear preference history and rebuild the plane around a start vector."""
         self.history = []
+        self.optimizer.fit_from_records([])
         self.x_plus = _clamp_vector(start_vector or self.default_start)
         self.generate_plane()
 
@@ -101,15 +104,13 @@ class SequentialPlaneSearch:
 
         chosen = self.current_samples[chosen_index].search_vector.vector
         rejected = []
-        for vector in self.representatives:
-            if _distance(vector, chosen) > EPSILON:
-                rejected.append(vector)
         for idx, sample in enumerate(self.current_samples):
             vector = sample.search_vector.vector
             if idx != chosen_index and _distance(vector, chosen) > EPSILON:
                 rejected.append(vector)
 
         self.history.append(PreferenceRecord(chosen=chosen, rejected=tuple(self._unique_vectors(rejected))))
+        self.optimizer.fit_from_records((record.chosen, record.rejected) for record in self.history)
         self.x_plus = chosen
         self.generate_plane()
 
@@ -150,35 +151,22 @@ class SequentialPlaneSearch:
         self.representatives = [_clamp_vector(vector) for vector in representatives]
 
     def _estimate_x_ei(self) -> Tuple[float, ...]:
-        """Pick a lightweight expected-improvement target for the next plane axis."""
-        if not self.history:
+        """Pick the expected-improvement target for the next plane axis."""
+        if not self.optimizer.fitted:
             direction = self._random_direction()
             return _clamp_vector(self.x_plus[i] + direction[i] * self.plane_radius for i in range(self.dimensions))
 
-        best = self.x_plus
-        best_score = self._acquisition_score(best)
-        for _ in range(160):
-            candidate = tuple(self.rng.random() for _ in range(self.dimensions))
-            score = self._acquisition_score(candidate)
-            if score > best_score:
-                best = candidate
-                best_score = score
+        candidates = [self.x_plus]
+        for _ in range(256):
+            candidates.append(tuple(self.rng.random() for _ in range(self.dimensions)))
+        best, _score = self.optimizer.best_expected_improvement(candidates, self.x_plus)
         return _clamp_vector(best)
 
     def _acquisition_score(self, candidate: Sequence[float]) -> float:
-        """Score a candidate using preference reward, rejection penalty, and novelty."""
-        positives = [record.chosen for record in self.history]
-        negatives = [vector for record in self.history for vector in record.rejected]
-        width = 0.28
-
-        reward = sum(math.exp(-(_distance(candidate, point) ** 2) / (2.0 * width * width)) for point in positives)
-        penalty = sum(math.exp(-(_distance(candidate, point) ** 2) / (2.0 * width * width)) for point in negatives)
-        observed = positives + negatives
-        uncertainty = 1.0
-        if observed:
-            uncertainty = min(_distance(candidate, point) for point in observed) / math.sqrt(self.dimensions)
-
-        return reward - 0.65 * penalty + 0.35 * uncertainty + self.rng.random() * 0.001
+        """Score a candidate using GP posterior Expected Improvement."""
+        if not self.optimizer.fitted:
+            return self.rng.random() * 0.001
+        return self.optimizer.expected_improvement([_clamp_vector(candidate)], self.x_plus)[0]
 
     def _random_direction(self) -> Tuple[float, ...]:
         """Create a random unit direction in the SPS search space."""
@@ -243,15 +231,16 @@ class SequentialPlaneSearch:
         return tuple(direction_value * radius for direction_value in normalized)
 
     def _plane_score(self, center: Sequence[float], u: Sequence[float], v: Sequence[float]) -> float:
-        """Approximate plane quality by averaging acquisition scores over 3x3 samples."""
-        total = 0.0
-        count = 0
+        """Approximate plane quality by averaging Expected Improvement over visible samples."""
+        points = []
         for u_coeff in (-1, 0, 1):
             for v_coeff in (-1, 0, 1):
                 point = tuple(center[i] + u_coeff * u[i] + v_coeff * v[i] for i in range(self.dimensions))
-                total += self._acquisition_score(_clamp_vector(point))
-                count += 1
-        return total / count
+                points.append(_clamp_vector(point))
+        if not self.optimizer.fitted:
+            return self.rng.random() * 0.001
+        scores = self.optimizer.expected_improvement(points, self.x_plus)
+        return sum(scores) / len(scores)
 
     def _unique_vectors(self, vectors: Sequence[Sequence[float]]) -> Tuple[Tuple[float, ...], ...]:
         """Remove near-duplicate vectors before storing preference data."""

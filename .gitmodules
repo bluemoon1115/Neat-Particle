@@ -1,0 +1,3 @@
+[submodule "GPytorch"]
+	path = GPytorch
+	url = https://github.com/cornellius-gp/gpytorch.git
