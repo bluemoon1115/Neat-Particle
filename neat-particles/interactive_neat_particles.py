@@ -4,13 +4,19 @@ import argparse
 import copy
 import os
 import random
+import sys
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 import neat
 from neat.innovation import InnovationTracker
 
 from draw_genome import draw_genome
+from genome_targets import save_genome_target, timestamped_target_path
 from particle_systems import BaseSystem, make_system
 from sequential_plane_search import SearchVector, SequentialPlaneSearch
 
@@ -140,12 +146,12 @@ def main() -> int:
     def generic_weight_slots(genome: neat.DefaultGenome) -> List[Tuple[int, int]]:
         """Select Generic Dc-input and Bias-input connection weights for SPS."""
         input_keys = config.genome_config.input_keys
-        r_key = input_keys[0]
-        g_key = input_keys[1]
-        b_key = input_keys[2]
+        px_key = input_keys[0]
+        py_key = input_keys[1]
+        pz_key = input_keys[2]
         distance_key = input_keys[3]
         bias_input_key = input_keys[4]
-        preferred_inputs = {r_key, g_key, b_key}
+        preferred_inputs = {px_key, py_key, pz_key, distance_key}
 
         slots = [key for key, connection in sorted(genome.connections.items()) if connection.enabled and key[0] in preferred_inputs]
         return slots
@@ -212,6 +218,7 @@ def main() -> int:
     sps_candidates: List[Candidate] = []
     paused = False
     generation = 0
+    last_export_path: Optional[str] = None
 
     margin = 12
     bottom_h = 70
@@ -296,6 +303,50 @@ def main() -> int:
         sps_bound_genome = copy.deepcopy(sps_candidates[idx].genome)
         sps_candidates = build_sps_batch(sps_bound_genome, args.seed)
 
+    def return_sps_to_iec() -> None:
+        """Replace the earliest selected IEC candidate with the current SPS genome."""
+        nonlocal candidates, mode
+        if sps_bound_genome is None:
+            mode = "IEC"
+            return
+
+        selected_indices = [i for i, candidate in enumerate(candidates) if candidate.selected]
+        target_idx = selected_indices[0] if selected_indices else 0
+        target = candidates[target_idx]
+        replacement = make_candidate(
+            target.index,
+            copy.deepcopy(sps_bound_genome),
+            label="SPS return",
+            species_key=target.species_key,
+        )
+        replacement.selected = True
+        candidates[target_idx] = replacement
+        mode = "IEC"
+
+    def export_current_target() -> None:
+        """Export the current manual target genome for headless SPS auto-selection."""
+        nonlocal last_export_path
+        target_dir = os.path.join(base_dir, "targets")
+        if mode == "SPS":
+            if not sps_candidates:
+                bind_sps_to_selection()
+            source = sps_candidates[4]
+        else:
+            selected = [candidate for candidate in candidates if candidate.selected]
+            source = selected[0] if selected else candidates[0]
+
+        path = timestamped_target_path(target_dir, source.species_key)
+        last_export_path = save_genome_target(
+            path,
+            source.genome,
+            config,
+            candidate_key=source.species_key,
+            mode=mode,
+            generation=generation,
+            label=source.label,
+        )
+        print(f"Exported target genome: {last_export_path}")
+
     running = True
     while running:
         dt = clock.tick(args.fps) / 1000.0
@@ -312,11 +363,13 @@ def main() -> int:
                     if mode == "IEC":
                         bind_sps_to_selection()
                     else:
-                        mode = "IEC"
+                        return_sps_to_iec()
                 elif event.key == pygame.K_b:
                     bind_sps_to_selection()
                 elif event.key == pygame.K_r:
                     reset_current_mode()
+                elif event.key == pygame.K_e:
+                    export_current_target()
                 elif event.key == pygame.K_w and mode == "IEC":
                     for candidate in candidates:
                         breeder.randomize_weights(candidate.genome)
@@ -383,9 +436,11 @@ def main() -> int:
             help1 = "click / 1..9: choose preferred sample   Tab: IEC   B: rebind genome   R: reset SPS"
         else:
             status = f"mode=IEC  system=generic  generation={generation}  paused={paused}"
-            help1 = "click / 1..9: select   N: new gen   B/Tab: SPS bind   R: reset   W: randomize weights"
+            help1 = "click / 1..9: select   N: new gen   B/Tab: SPS bind   R: reset   W: randomize weights   E: export genome"
         screen.blit(font.render(status, True, (230, 230, 230)), (12, bar_y + 15))
         screen.blit(font.render(help1, True, (200, 200, 200)), (12, bar_y + 32))
+        if last_export_path:
+            screen.blit(font.render(f"export={last_export_path}", True, (170, 220, 170)), (12, bar_y + 49))
 
 
         pygame.display.flip()

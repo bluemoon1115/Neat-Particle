@@ -13,6 +13,7 @@ It is designed for learning: you can browse 9 evolving particle “species” (g
 - Press `R` to reset to a fresh random batch; press `W` to randomize weights of the current batch.
 - Press `Space` to pause/unpause time (“freeze”).
 - Press `Tab` or `B` to enter **SPS weight tuning** for the selected genome.
+- Press `E` to export a genome target file for automated SPS selection.
 - Press `L` to show/hide the in-app control legend.
 
 ### Particle system implemented
@@ -52,6 +53,7 @@ python interactive_neat_particles.py
 - `N`: new IEC generation (offspring from selected parents; if none selected, does nothing).
 - `R`: reset the active mode.
 - `W`: randomize IEC weights (keeps topology).
+- `E`: export a manual auto-selection target genome.
 - `Space`: pause/unpause (freeze time).
 - `L`: show/hide the key legend popup.
 - `Esc`: quit.
@@ -61,8 +63,7 @@ python interactive_neat_particles.py
 SPS is a second interaction mode layered on top of the IEC gallery. IEC changes genomes through NEAT mutation. SPS keeps the selected Generic genome topology fixed and generates nine variants by changing selected connection weights.
 
 Current SPS target:
-- Connection weights whose source input is `Dc` (distance from center).
-- Connection weights whose source input is `Bias` (the constant input value `1.0`).
+- Connection weights whose source input is one of the Generic `Px`, `Py`, or `Pz` inputs.
 - If those links are missing or disabled, SPS falls back to enabled connection weights so the mode still has something to tune.
 
 The SPS design vector is the selected weights normalized into `[0, 1]`. The UI decodes each coordinate back into the configured NEAT weight range from `config-generic.ini` (`weight_min_value` to `weight_max_value`) before building each genome variant.
@@ -72,6 +73,35 @@ Hybrid workflow:
 2. Select it and press `Tab` or `B`.
 3. In SPS, click the best-looking of the nine weight variants.
 4. SPS records that preference and creates the next 3×3 plane around the chosen weights.
+
+### Manual target export and automated SPS selection
+
+The interactive UI can export a genome as a target for automated SPS experiments:
+
+- Press `E` in IEC mode to export the selected candidate. If nothing is selected, candidate 1 is exported.
+- Press `E` in SPS mode to export the center SPS candidate. The center candidate is index `4` in the 3×3 SPS plane.
+- Exported files are written to `targets/` with timestamped names such as `target_20260627_120000_key_4.json`.
+- There is no `latest_target.json` shortcut. Pass the exact exported file path to the auto-selection script.
+
+The exported target file stores the original NEAT genome data, not only the runnable network. This includes node genes, connection genes, innovation numbers, weights, enabled flags, fitness, config shape, generation/mode metadata, and the candidate key. The auto-selection script needs this genome data so it can use `DefaultGenome.distance(...)` for similarity.
+
+Run automated SPS selection from the repository root:
+
+```bash
+python neat-particles/auto_sps_select.py --target neat-particles/targets/target_20260627_120000_key_4.json --config neat-particles/config-generic.ini --seed 1 --threshold 0.05 --max-steps 100
+```
+
+Useful options:
+
+- `--target <path>`: required target genome JSON exported from the UI.
+- `--config <path>`: NEAT config file; defaults to `config-generic.ini`.
+- `--seed <int>`: repeatable random initial SPS center.
+- `--threshold <float>`: stop when genome distance is at or below this value; default is `0.05`.
+- `--max-steps <int>`: stop after this many SPS choices if the threshold is not reached; default is `100`.
+- `--output-dir <path>`: directory for the final selected genome and run report; defaults to `auto-runs/`.
+- `--no-view`: skip the final pygame comparison window.
+
+The automated script does not render during search. It creates a random initial genome, generates the same nine-candidate SPS plane layout as the interactive SPS mode, chooses the candidate with the smallest genome distance to the exported target, and repeats until `--threshold` or `--max-steps` stops the run. After completion, it saves a run report and final genome export, then opens a pygame comparison window unless `--no-view` is used. The comparison view shows the target particle/genome and the final selected particle/genome side by side.
 
 ### Notes / next steps
 
