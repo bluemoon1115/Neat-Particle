@@ -1,6 +1,6 @@
 ## NEAT Particles (interactive particle-system evolution)
 
-This folder contains a lightweight, **interactive evolutionary computation (IEC)** framework inspired by the paper in this directory: `neat-particle paper.pdf`.
+This folder contains a lightweight, **interactive evolutionary computation (IEC)** framework inspired by the paper: `neat-particle`.
 
 It is designed for learning: you can browse 9 evolving particle “species” (genomes) at a time, manually select which ones breed the next generation, then use Sequential Plane Search (SPS) to fine-tune selected Generic genome connection weights.
 
@@ -14,7 +14,6 @@ It is designed for learning: you can browse 9 evolving particle “species” (g
 - Press `Space` to pause/unpause time (“freeze”).
 - Press `Tab` or `B` to enter **SPS weight tuning** for the selected genome.
 - Press `E` to export a genome target file for automated SPS selection.
-- Press `L` to show/hide the in-app control legend.
 
 ### Particle system implemented
 
@@ -45,6 +44,12 @@ cd neat-particles
 python interactive_neat_particles.py
 ```
 
+To show genetic distance from an exported target genome on every grid candidate:
+
+```bash
+python interactive_neat_particles.py --target targets/[target_file]
+```
+
 ### Controls
 
 - Mouse click or keys `1..9`: IEC toggles selection; SPS chooses the preferred sample.
@@ -55,7 +60,6 @@ python interactive_neat_particles.py
 - `W`: randomize IEC weights (keeps topology).
 - `E`: export a manual auto-selection target genome.
 - `Space`: pause/unpause (freeze time).
-- `L`: show/hide the key legend popup.
 - `Esc`: quit.
 
 ### Sequential Plane Search weight tuning
@@ -101,7 +105,7 @@ Useful options:
 - `--output-dir <path>`: directory for the final selected genome and run report; defaults to `auto-runs/`.
 - `--no-view`: skip the final pygame comparison window.
 
-The automated script does not render during search. It creates a random initial genome, generates the same nine-candidate SPS plane layout as the interactive SPS mode, chooses the candidate with the smallest genome distance to the exported target, and repeats until `--threshold` or `--max-steps` stops the run. After completion, it saves a run report and final genome export, then opens a pygame comparison window unless `--no-view` is used. The comparison view shows the target particle/genome and the final selected particle/genome side by side.
+The automated script does not render during search. It creates a random initial genome, generates the same nine-candidate SPS plane layout as the interactive SPS mode, chooses the candidate with the smallest genome distance to the exported target, and repeats until `--threshold` or `--max-steps` stops the run. It records elapsed search time as `elapsed_seconds` in the console output and run report; this measures the headless search only, not the final pygame viewing time. The report history is compacted to every five steps, plus the final termination step. After completion, it saves a run report and final genome export, then opens a pygame comparison window unless `--no-view` is used. The comparison view shows the target particle/genome and the final selected particle/genome side by side.
 
 ### Notes / next steps
 

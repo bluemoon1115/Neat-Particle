@@ -16,7 +16,7 @@ import neat
 from neat.innovation import InnovationTracker
 
 from draw_genome import draw_genome
-from genome_targets import save_genome_target, timestamped_target_path
+from genome_targets import load_genome_target, save_genome_target, timestamped_target_path
 from particle_systems import BaseSystem, make_system
 from sequential_plane_search import SearchVector, SequentialPlaneSearch
 
@@ -101,6 +101,7 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--fps", type=int, default=60)
     parser.add_argument("--scale", type=float, default=0.45, help="S in P_t = P_{t-1} + S*V*T")
+    parser.add_argument("--target", default=None, help="Optional exported target genome JSON file to show grid distances.")
     args = parser.parse_args()
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -113,6 +114,11 @@ def main() -> int:
         neat.DefaultStagnation,
         cfg_path,
     )
+    target_genome: Optional[neat.DefaultGenome] = None
+    target_path: Optional[str] = None
+    if args.target:
+        target_path = os.path.abspath(args.target)
+        target_genome, _target_data = load_genome_target(target_path, config)
 
     breeder = InteractiveBreeder(config, seed=args.seed)
     weight_lo = float(config.genome_config.weight_min_value)
@@ -238,6 +244,13 @@ def main() -> int:
     def active_candidates() -> List[Candidate]:
         """Return the gallery candidates for the current interaction mode."""
         return sps_candidates if mode == "SPS" else candidates
+
+    def target_distance_label(genome: neat.DefaultGenome) -> str:
+        """Return a compact distance label for the optional target genome."""
+        if target_genome is None:
+            return ""
+        distance = genome.distance(target_genome, config.genome_config)
+        return f" dist={distance:.4f}"
 
     def candidate_index_at_pos(pos) -> int:
         """Convert a mouse position into a gallery index."""
@@ -421,9 +434,9 @@ def main() -> int:
             draw_genome(screen, netrect, candidate.genome, config, small)
 
             title = (
-                f"key={candidate.species_key}: {candidate.label}"
+                f"key={candidate.species_key}{target_distance_label(candidate.genome)}: {candidate.label}"
                 if candidate.label
-                else f"key={candidate.species_key}"
+                else f"key={candidate.species_key}{target_distance_label(candidate.genome)}"
             )
             screen.blit(font.render(title, True, (220, 220, 220)), (x + 8, y + 6))
 
@@ -437,6 +450,8 @@ def main() -> int:
         else:
             status = f"mode=IEC  system=generic  generation={generation}  paused={paused}"
             help1 = "click / 1..9: select   N: new gen   B/Tab: SPS bind   R: reset   W: randomize weights   E: export genome"
+        if target_path:
+            status = f"{status}  target={os.path.basename(target_path)}"
         screen.blit(font.render(status, True, (230, 230, 230)), (12, bar_y + 15))
         screen.blit(font.render(help1, True, (200, 200, 200)), (12, bar_y + 32))
         if last_export_path:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import os
 import random
+import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -31,6 +32,7 @@ class SpsRunResult:
     steps: int
     stop_reason: str
     history: List[Dict[str, object]]
+    elapsed_seconds: float
 
 
 class ParticleGenomeFactory:
@@ -175,6 +177,7 @@ def run_auto_sps_selection(
     max_steps: int,
 ) -> SpsRunResult:
     """Run SPS without rendering until threshold or max steps is reached."""
+    started_at = time.perf_counter()
     factory = ParticleGenomeFactory(config, seed=seed)
     bound_genome = factory.create_random_genome()
     slots = generic_weight_slots(bound_genome, config)
@@ -213,6 +216,7 @@ def run_auto_sps_selection(
     else:
         stop_reason = "max_steps"
 
+    elapsed_seconds = time.perf_counter() - started_at
     return SpsRunResult(
         target=target,
         final_genome=final_genome,
@@ -220,4 +224,5 @@ def run_auto_sps_selection(
         steps=len(history),
         stop_reason=stop_reason,
         history=history,
+        elapsed_seconds=elapsed_seconds,
     )

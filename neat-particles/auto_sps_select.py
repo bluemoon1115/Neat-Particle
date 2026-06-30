@@ -19,8 +19,26 @@ from particle_systems import make_system
 from sps_selection import load_particle_config, run_auto_sps_selection
 
 
+REPORT_HISTORY_INTERVAL = 10
+
+
 def _default_config_path() -> str:
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "config-generic.ini")
+
+
+def _compact_history(history: list[dict[str, object]], interval: int = REPORT_HISTORY_INTERVAL) -> list[dict[str, object]]:
+    """Keep every interval step for reports, plus the final termination step."""
+    if interval < 1:
+        raise ValueError("history interval must be at least 1")
+    if not history:
+        return []
+
+    final_step = history[-1].get("step")
+    return [
+        record
+        for record in history
+        if record.get("step") == final_step or int(record.get("step", 0)) % interval == 0
+    ]
 
 
 def _write_run_outputs(args, config: neat.Config, result) -> tuple[str, str]:
@@ -51,8 +69,10 @@ def _write_run_outputs(args, config: neat.Config, result) -> tuple[str, str]:
         "max_steps": args.max_steps,
         "stop_reason": result.stop_reason,
         "steps": result.steps,
+        "elapsed_seconds": result.elapsed_seconds,
         "final_distance": result.final_distance,
-        "history": result.history,
+        "history_interval": REPORT_HISTORY_INTERVAL,
+        "history": _compact_history(result.history),
     }
     with open(report_path, "w", encoding="utf-8") as file:
         json.dump(report, file, indent=2)
@@ -99,6 +119,7 @@ def show_result_view(
     stop_reason: str,
     final_distance: float,
     steps: int,
+    elapsed_seconds: float,
 ) -> None:
     """Open the final-only pygame comparison view."""
     try:
@@ -143,7 +164,8 @@ def show_result_view(
         panel_h = screen.get_height() - top_h - margin * 2
 
         summary = (
-            f"stop={stop_reason}  steps={steps}  final_distance={final_distance:.6f}  "
+            f"stop={stop_reason}  steps={steps}  elapsed={elapsed_seconds:.3f}s  "
+            f"final_distance={final_distance:.6f}  "
             f"Space: pause  Esc: close"
         )
         screen.blit(font.render(summary, True, (230, 230, 230)), (margin, 14))
@@ -198,6 +220,7 @@ def main() -> int:
 
     print(f"Stop reason: {result.stop_reason}")
     print(f"Steps: {result.steps}")
+    print(f"Elapsed seconds: {result.elapsed_seconds:.6f}")
     print(f"Final distance: {result.final_distance:.6f}")
     print(f"Seed: {args.seed}")
     print(f"Final genome: {final_path}")
@@ -214,6 +237,7 @@ def main() -> int:
             stop_reason=result.stop_reason,
             final_distance=result.final_distance,
             steps=result.steps,
+            elapsed_seconds=result.elapsed_seconds,
         )
 
     return 0

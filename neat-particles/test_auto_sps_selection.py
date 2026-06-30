@@ -20,6 +20,7 @@ from sps_selection import (
     run_auto_sps_selection,
     select_nearest_candidate,
 )
+from auto_sps_select import _compact_history
 
 
 CONFIG_PATH = os.path.join(BASE_DIR, "config-generic.ini")
@@ -99,6 +100,7 @@ class AutoSpsSelectionTest(unittest.TestCase):
 
         self.assertEqual(result.stop_reason, "threshold")
         self.assertEqual(result.steps, 1)
+        self.assertGreaterEqual(result.elapsed_seconds, 0.0)
 
     def test_auto_selection_stops_at_max_steps(self):
         try:
@@ -114,6 +116,16 @@ class AutoSpsSelectionTest(unittest.TestCase):
 
         self.assertEqual(result.stop_reason, "max_steps")
         self.assertEqual(result.steps, 3)
+        self.assertGreaterEqual(result.elapsed_seconds, 0.0)
+
+
+class AutoSpsReportTest(unittest.TestCase):
+    def test_compact_history_keeps_every_five_steps_and_final_step(self):
+        history = [{"step": step} for step in range(1, 13)]
+
+        compact = _compact_history(history)
+
+        self.assertEqual([record["step"] for record in compact], [5, 10, 12])
 
 
 if __name__ == "__main__":
