@@ -28,6 +28,7 @@ class Candidate:
     genome: neat.DefaultGenome
     net: object
     system: BaseSystem
+    system_seed: int
     label: Optional[str] = None
     selected: bool = False
 
@@ -114,6 +115,7 @@ def main() -> int:
         neat.DefaultStagnation,
         cfg_path,
     )
+
     target_genome: Optional[neat.DefaultGenome] = None
     target_path: Optional[str] = None
     if args.target:
@@ -157,9 +159,10 @@ def main() -> int:
         pz_key = input_keys[2]
         distance_key = input_keys[3]
         bias_input_key = input_keys[4]
-        preferred_inputs = {px_key, py_key, pz_key, distance_key}
+        preferred_inputs = {distance_key, bias_input_key}
 
         slots = [key for key, connection in sorted(genome.connections.items()) if connection.enabled and key[0] in preferred_inputs]
+        print(len(slots))
         return slots
 
         # Fallback prevents SPS from breaking if mutations deleted/disabled preferred links.
@@ -206,7 +209,15 @@ def main() -> int:
         net = neat.nn.FeedForwardNetwork.create(genome, config)
         seed = system_seed if system_seed is not None else (args.seed or 0) + idx * 1337
         system = make_system(seed=seed)
-        return Candidate(index=idx, species_key=species_key or idx, genome=genome, net=net, system=system, label=label)
+        return Candidate(
+            index=idx,
+            species_key=species_key or idx,
+            genome=genome,
+            net=net,
+            system=system,
+            system_seed=seed,
+            label=label,
+        )
 
     def build_batch(genomes, key_start: int = 1) -> List[Candidate]:
         """Build the normal IEC gallery from a list of genomes."""
@@ -244,6 +255,11 @@ def main() -> int:
     def active_candidates() -> List[Candidate]:
         """Return the gallery candidates for the current interaction mode."""
         return sps_candidates if mode == "SPS" else candidates
+
+    def replay_active_particles() -> None:
+        """Restart particle systems for the currently displayed candidates."""
+        for candidate in active_candidates():
+            candidate.system = make_system(seed=candidate.system_seed)
 
     def target_distance_label(genome: neat.DefaultGenome) -> str:
         """Return a compact distance label for the optional target genome."""
@@ -380,6 +396,8 @@ def main() -> int:
                 elif event.key == pygame.K_b:
                     bind_sps_to_selection()
                 elif event.key == pygame.K_r:
+                    replay_active_particles()
+                elif event.key == pygame.K_s:
                     reset_current_mode()
                 elif event.key == pygame.K_e:
                     export_current_target()
@@ -446,10 +464,10 @@ def main() -> int:
             bound_key = sps_bound_species_key if sps_bound_genome is not None else "none"
             steps = len(sps_search.history) if sps_search is not None else 0
             status = f"mode=SPS-weight  system=generic  bound_key={bound_key}  weight slots={len(sps_weight_slots)}  sps_steps={steps}  paused={paused}"
-            help1 = "click / 1..9: choose preferred sample   Tab: IEC   B: rebind genome   R: reset SPS"
+            help1 = "click / 1..9: choose preferred sample   Tab: IEC   B: rebind genome   R: replay S: reset"
         else:
             status = f"mode=IEC  system=generic  generation={generation}  paused={paused}"
-            help1 = "click / 1..9: select   N: new gen   B/Tab: SPS bind   R: reset   W: randomize weights   E: export genome"
+            help1 = "click / 1..9: select   N: new gen   B/Tab: SPS bind   R: replay   W: randomize weights   E: export genome S: reset"
         if target_path:
             status = f"{status}  target={os.path.basename(target_path)}"
         screen.blit(font.render(status, True, (230, 230, 230)), (12, bar_y + 15))

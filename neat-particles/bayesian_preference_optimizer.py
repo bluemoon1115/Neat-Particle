@@ -225,11 +225,22 @@ class PreferentialBayesianOptimizer:
             variance = variance.clamp_min(self.jitter)
             return self._to_float_list(mean), self._to_float_list(variance)
 
+    def best_observed_point_by_posterior_mean(self) -> Vector:
+        if not self.dataset.points:
+            return ()
+        means, _ = self.posterior(self.dataset.points)
+        best_idx = max(range(len(self.dataset.points)), key=lambda idx :means[idx])
+        return self.dataset.points[best_idx]
+
     def expected_improvement(self, candidates: Sequence[Sequence[float]], incumbent: Sequence[float]) -> List[float]:
         if not candidates:
             return []
         candidate_mean, candidate_var = self.posterior(candidates)
-        incumbent_mean, _ = self.posterior([incumbent])
+
+        # choose what to use as EI incumbent (incumbent / incumbent_point)
+        incumbent_point = self.best_observed_point_by_posterior_mean() if self._fitted else tuple(incumbent)
+        incumbent_mean, _ = self.posterior([incumbent_point])
+
         best_mean = incumbent_mean[0] if incumbent_mean else 0.0
         out = []
         for mean, variance in zip(candidate_mean, candidate_var):

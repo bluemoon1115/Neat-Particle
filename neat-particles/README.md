@@ -95,6 +95,14 @@ Run automated SPS selection from the repository root:
 python neat-particles/auto_sps_select.py --target neat-particles/targets/target_20260627_120000_key_4.json --config neat-particles/config-generic.ini --seed 1 --threshold 0.05 --max-steps 100
 ```
 
+To inspect one exported target genome visually:
+
+```bash
+python neat-particles/view_genome_target.py neat-particles/targets/target_20260627_120000_key_4.json
+```
+
+The viewer opens a pygame window with the particle animation, the ANN/genome graph, input/output key labels, export metadata, config shape, and connection summary.
+
 Useful options:
 
 - `--target <path>`: required target genome JSON exported from the UI.
