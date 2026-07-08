@@ -10,6 +10,16 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import neat
 from neat.innovation import InnovationTracker
 
+from particle_similarity import (
+    FINAL_SETTINGS,
+    SELECTION_SETTINGS,
+    ParticleBehaviorProfile,
+    ParticleSimilaritySettings,
+    compare_profiles,
+    histogram_distance,
+    ssim_distance,
+    profile_genome,
+)
 from sequential_plane_search import SearchVector, SequentialPlaneSearch
 
 
@@ -29,6 +39,8 @@ class SpsRunResult:
     target: neat.DefaultGenome
     final_genome: neat.DefaultGenome
     final_distance: float
+    final_histogram_distance: float
+    final_ssim_distance: float
     steps: int
     stop_reason: str
     history: List[Dict[str, object]]
@@ -160,10 +172,23 @@ def create_sps_search(
 def select_nearest_candidate(
     candidates: Sequence[SpsCandidate],
     target: neat.DefaultGenome,
-    genome_config,
+    config: neat.Config,
+    *,
+    settings: ParticleSimilaritySettings = SELECTION_SETTINGS,
+    target_profile: Optional[ParticleBehaviorProfile] = None,
 ) -> Tuple[int, float, List[float]]:
-    """Return the index and distance of the candidate nearest to the target."""
-    distances = [candidate.genome.distance(target, genome_config) for candidate in candidates]
+    """Return the candidate with the nearest sampled particle behavior."""
+    if target_profile is None:
+        target_profile = profile_genome(target, config, settings, include_raster=False)
+
+    distances = []
+    for candidate in candidates:
+        candidate_profile = profile_genome(candidate.genome, config, settings, include_raster=False)
+        
+        # Spatial histogram scoring is temporarily disabled.
+        distances.append(histogram_distance(target_profile.histogram, candidate_profile.histogram))
+        # distances.append(ssim_distance(target_profile.raster, candidate_profile.raster))
+
     best_index = min(range(len(distances)), key=distances.__getitem__)
     return best_index, distances[best_index], distances
 
@@ -185,7 +210,17 @@ def run_auto_sps_selection(
     history: List[Dict[str, object]] = []
 
     final_genome = bound_genome
-    final_distance = final_genome.distance(target, config.genome_config)
+    selection_target_profile = profile_genome(target, config, SELECTION_SETTINGS, include_raster=False)
+    # initial_similarity = compare_profiles
+    final_histogram_distance = compare_profiles(
+        selection_target_profile,
+        profile_genome(final_genome, config, SELECTION_SETTINGS),
+    ).histogram_distance
+    final_distance = final_histogram_distance
+    final_ssim_distance = 0.0
+    # final_histogram_distance = initial_similarity.histogram_distance
+    # final_ssim_distance = initial_similarity.ssim_distance
+    # final_distance = final_ssim_distance
     stop_reason = "threshold"
 
     for step in range(max_steps):
@@ -193,10 +228,15 @@ def run_auto_sps_selection(
         best_index, best_distance, distances = select_nearest_candidate(
             candidates,
             target,
-            config.genome_config,
+            config,
+            settings=SELECTION_SETTINGS,
+            target_profile=selection_target_profile,
         )
         chosen = candidates[best_index]
         final_genome = chosen.genome
+        final_histogram_distance = best_distance
+        # final_histogram_distance = 0.0
+        # final_ssim_distance = best_distance
         final_distance = best_distance
         history.append(
             {
@@ -216,11 +256,20 @@ def run_auto_sps_selection(
     else:
         stop_reason = "max_steps"
 
+    final_target_profile = profile_genome(target, config, FINAL_SETTINGS)
+    final_candidate_profile = profile_genome(final_genome, config, FINAL_SETTINGS)
+    final_similarity = compare_profiles(final_target_profile, final_candidate_profile)
+    final_histogram_distance = final_similarity.histogram_distance
+    final_ssim_distance = final_similarity.ssim_distance
+    final_distance = final_similarity.combined_distance
+
     elapsed_seconds = time.perf_counter() - started_at
     return SpsRunResult(
         target=target,
         final_genome=final_genome,
         final_distance=final_distance,
+        final_histogram_distance=final_histogram_distance,
+        final_ssim_distance=final_ssim_distance,
         steps=len(history),
         stop_reason=stop_reason,
         history=history,

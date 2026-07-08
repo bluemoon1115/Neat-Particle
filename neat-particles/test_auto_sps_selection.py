@@ -7,10 +7,13 @@ import tempfile
 import unittest
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(BASE_DIR)
+sys.path.insert(0, REPO_ROOT)
 sys.path.insert(0, BASE_DIR)
 
 from genome_targets import genome_to_target_data, load_genome_target, save_genome_target, target_data_to_genome
 from bayesian_preference_optimizer import BayesianOptimizationDependencyError
+from particle_similarity import ParticleSimilaritySettings, compare_genomes, histogram_distance, profile_genome, ssim_distance
 from sps_selection import (
     ParticleGenomeFactory,
     build_sps_candidates,
@@ -24,6 +27,7 @@ from auto_sps_select import _compact_history
 
 
 CONFIG_PATH = os.path.join(BASE_DIR, "config-generic.ini")
+FAST_SIMILARITY_SETTINGS = ParticleSimilaritySettings(simulation_steps=20, sample_stride=5, grid_size=12)
 
 
 class GenomeTargetTest(unittest.TestCase):
@@ -79,12 +83,94 @@ class AutoSpsSelectionTest(unittest.TestCase):
         best_index, best_distance, distances = select_nearest_candidate(
             candidates,
             self.target,
-            self.config.genome_config,
+            self.config,
+            settings=FAST_SIMILARITY_SETTINGS,
         )
 
         self.assertEqual(best_index, 2)
         self.assertEqual(best_distance, min(distances))
         self.assertEqual(best_distance, 0.0)
+
+    def test_identical_genomes_have_zero_behavior_distance(self):
+        result = compare_genomes(
+            self.target,
+            copy.deepcopy(self.target),
+            self.config,
+            FAST_SIMILARITY_SETTINGS,
+        )
+
+        self.assertEqual(result.histogram_distance, 0.0)
+        self.assertEqual(result.ssim_distance, 0.0)
+        self.assertEqual(result.combined_distance, 0.0)
+
+    def test_behavior_distances_are_bounded(self):
+        other = self.factory.create_random_genome()
+
+        result = compare_genomes(
+            self.target,
+            other,
+            self.config,
+            FAST_SIMILARITY_SETTINGS,
+        )
+
+        self.assertEqual(result.histogram_distance, 0.0)
+        self.assertGreaterEqual(result.ssim_distance, 0.0)
+        self.assertLessEqual(result.ssim_distance, 1.0)
+        self.assertGreaterEqual(result.combined_distance, 0.0)
+        self.assertLessEqual(result.combined_distance, 1.0)
+
+    def test_compare_genomes_uses_ssim_only_temporarily(self):
+        other = self.factory.create_random_genome()
+
+        result = compare_genomes(
+            self.target,
+            other,
+            self.config,
+            FAST_SIMILARITY_SETTINGS,
+        )
+
+        self.assertEqual(result.histogram_distance, 0.0)
+        self.assertEqual(result.combined_distance, result.ssim_distance)
+
+    def test_histogram_similarity_includes_particle_color(self):
+        dark = copy.deepcopy(self.target)
+        light = copy.deepcopy(self.target)
+        for output_key in self.config.genome_config.output_keys[3:6]:
+            dark.nodes[output_key].bias = -30.0
+            light.nodes[output_key].bias = 30.0
+
+        spatial_only_settings = ParticleSimilaritySettings(
+            simulation_steps=20,
+            sample_stride=5,
+            grid_size=12,
+            color_weight=0.0,
+        )
+        color_settings = ParticleSimilaritySettings(
+            simulation_steps=20,
+            sample_stride=5,
+            grid_size=12,
+            color_weight=0.3,
+        )
+
+        dark_spatial = profile_genome(dark, self.config, spatial_only_settings, include_raster=False)
+        light_spatial = profile_genome(light, self.config, spatial_only_settings, include_raster=False)
+        dark_color = profile_genome(dark, self.config, color_settings, include_raster=False)
+        light_color = profile_genome(light, self.config, color_settings, include_raster=False)
+
+        self.assertEqual(histogram_distance(dark_spatial.histogram, light_spatial.histogram), 0.0)
+        self.assertGreater(histogram_distance(dark_color.histogram, light_color.histogram), 0.0)
+
+    def test_ssim_detects_particle_color_difference(self):
+        dark = copy.deepcopy(self.target)
+        light = copy.deepcopy(self.target)
+        for output_key in self.config.genome_config.output_keys[3:6]:
+            dark.nodes[output_key].bias = -30.0
+            light.nodes[output_key].bias = 30.0
+
+        dark_profile = profile_genome(dark, self.config, FAST_SIMILARITY_SETTINGS)
+        light_profile = profile_genome(light, self.config, FAST_SIMILARITY_SETTINGS)
+
+        self.assertGreater(ssim_distance(dark_profile.raster, light_profile.raster), 0.0)
 
     def test_auto_selection_stops_at_threshold(self):
         try:
@@ -100,6 +186,10 @@ class AutoSpsSelectionTest(unittest.TestCase):
 
         self.assertEqual(result.stop_reason, "threshold")
         self.assertEqual(result.steps, 1)
+        self.assertGreaterEqual(result.final_histogram_distance, 0.0)
+        self.assertGreaterEqual(result.final_ssim_distance, 0.0)
+        self.assertIn("distances", result.history[0])
+        self.assertEqual(len(result.history[0]["distances"]), 9)
         self.assertGreaterEqual(result.elapsed_seconds, 0.0)
 
     def test_auto_selection_stops_at_max_steps(self):

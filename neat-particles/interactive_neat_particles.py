@@ -17,6 +17,7 @@ from neat.innovation import InnovationTracker
 
 from draw_genome import draw_genome
 from genome_targets import load_genome_target, save_genome_target, timestamped_target_path
+from particle_similarity import SELECTION_SETTINGS, profile_genome, ssim_distance, histogram_distance
 from particle_systems import BaseSystem, make_system
 from sequential_plane_search import SearchVector, SequentialPlaneSearch
 
@@ -118,9 +119,11 @@ def main() -> int:
 
     target_genome: Optional[neat.DefaultGenome] = None
     target_path: Optional[str] = None
+    target_profile = None
     if args.target:
         target_path = os.path.abspath(args.target)
         target_genome, _target_data = load_genome_target(target_path, config)
+        target_profile = profile_genome(target_genome, config, SELECTION_SETTINGS, include_raster=False)
 
     breeder = InteractiveBreeder(config, seed=args.seed)
     weight_lo = float(config.genome_config.weight_min_value)
@@ -162,7 +165,7 @@ def main() -> int:
         preferred_inputs = {distance_key, bias_input_key}
 
         slots = [key for key, connection in sorted(genome.connections.items()) if connection.enabled and key[0] in preferred_inputs]
-        print(len(slots))
+        # print(len(slots))
         return slots
 
         # Fallback prevents SPS from breaking if mutations deleted/disabled preferred links.
@@ -261,12 +264,35 @@ def main() -> int:
         for candidate in active_candidates():
             candidate.system = make_system(seed=candidate.system_seed)
 
+    target_distance_cache = {}
+
+    def genome_behavior_signature(genome: neat.DefaultGenome):
+        """Return a cache key for behavior-affecting genome parameters."""
+        node_items = tuple(
+            (key, node.bias, node.response, node.activation, node.aggregation)
+            for key, node in sorted(genome.nodes.items())
+        )
+        connection_items = tuple(
+            (key, connection.weight, connection.enabled)
+            for key, connection in sorted(genome.connections.items())
+        )
+        return node_items, connection_items
+
     def target_distance_label(genome: neat.DefaultGenome) -> str:
-        """Return a compact distance label for the optional target genome."""
-        if target_genome is None:
+        """Return a compact behavioral distance label for the optional target genome."""
+        if target_profile is None:
             return ""
-        distance = genome.distance(target_genome, config.genome_config)
-        return f" dist={distance:.4f}"
+        signature = genome_behavior_signature(genome)
+        distance = target_distance_cache.get(signature)
+        if distance is None:
+            candidate_profile = profile_genome(genome, config, SELECTION_SETTINGS)
+            
+            # Spatial histogram label scoring is temporarily disabled.
+            distance = histogram_distance(target_profile.histogram, candidate_profile.histogram)
+            # distance = ssim_distance(target_profile.raster, candidate_profile.raster)
+            
+            target_distance_cache[signature] = distance
+        return f" hist={distance:.4f}"
 
     def candidate_index_at_pos(pos) -> int:
         """Convert a mouse position into a gallery index."""
@@ -434,6 +460,7 @@ def main() -> int:
         screen.fill((18, 18, 22))
 
         for i, candidate in enumerate(active_candidates()):
+            # drawing the borders of the candidates
             x, y, w, h = cell_rect(i)
             if mode == "IEC":
                 border = (240, 220, 120) if candidate.selected else (70, 70, 80)
@@ -441,6 +468,7 @@ def main() -> int:
                 border = (120, 180, 240) if i == 4 else (70, 70, 80)
             pygame.draw.rect(screen, border, (x, y, w, h), 2)
 
+            # drawing the ANN preview
             left_w = int(w * 0.62)
             preview = (x + 6, y + 6, left_w - 12, h - 12)
             netrect = (x + left_w, y + 6, w - left_w - 6, h - 12)
@@ -464,7 +492,7 @@ def main() -> int:
             bound_key = sps_bound_species_key if sps_bound_genome is not None else "none"
             steps = len(sps_search.history) if sps_search is not None else 0
             status = f"mode=SPS-weight  system=generic  bound_key={bound_key}  weight slots={len(sps_weight_slots)}  sps_steps={steps}  paused={paused}"
-            help1 = "click / 1..9: choose preferred sample   Tab: IEC   B: rebind genome   R: replay S: reset"
+            help1 = "click / 1..9: choose preferred sample   Tab: IEC   B: rebind genome   R: replay E: export genome S: reset"
         else:
             status = f"mode=IEC  system=generic  generation={generation}  paused={paused}"
             help1 = "click / 1..9: select   N: new gen   B/Tab: SPS bind   R: replay   W: randomize weights   E: export genome S: reset"

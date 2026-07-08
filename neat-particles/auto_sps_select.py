@@ -19,7 +19,7 @@ from particle_systems import make_system
 from sps_selection import load_particle_config, run_auto_sps_selection
 
 
-REPORT_HISTORY_INTERVAL = 10
+REPORT_HISTORY_INTERVAL = 5
 
 
 def _default_config_path() -> str:
@@ -57,7 +57,7 @@ def _write_run_outputs(args, config: neat.Config, result) -> tuple[str, str]:
         candidate_key=None,
         mode="AUTO_SPS",
         generation=result.steps,
-        label=f"distance={result.final_distance:.6f}",
+        label=f"behavior_distance={result.final_distance:.6f}",
     )
 
     report = {
@@ -71,6 +71,8 @@ def _write_run_outputs(args, config: neat.Config, result) -> tuple[str, str]:
         "steps": result.steps,
         "elapsed_seconds": result.elapsed_seconds,
         "final_distance": result.final_distance,
+        "final_histogram_distance": result.final_histogram_distance,
+        "final_ssim_distance": result.final_ssim_distance,
         "history_interval": REPORT_HISTORY_INTERVAL,
         "history": _compact_history(result.history),
     }
@@ -165,7 +167,7 @@ def show_result_view(
 
         summary = (
             f"stop={stop_reason}  steps={steps}  elapsed={elapsed_seconds:.3f}s  "
-            f"final_distance={final_distance:.6f}  "
+            f"behavior_distance={final_distance:.6f}  "
             f"Space: pause  Esc: close"
         )
         screen.blit(font.render(summary, True, (230, 230, 230)), (margin, 14))
@@ -221,7 +223,9 @@ def main() -> int:
     print(f"Stop reason: {result.stop_reason}")
     print(f"Steps: {result.steps}")
     print(f"Elapsed seconds: {result.elapsed_seconds:.6f}")
-    print(f"Final distance: {result.final_distance:.6f}")
+    print(f"Final behavioral distance: {result.final_distance:.6f}")
+    print(f"Final histogram distance: {result.final_histogram_distance:.6f}")
+    print(f"Final SSIM distance: {result.final_ssim_distance:.6f}")
     print(f"Seed: {args.seed}")
     print(f"Final genome: {final_path}")
     print(f"Run report: {report_path}")
