@@ -154,19 +154,44 @@ def main() -> int:
         """Map one normalized SPS coordinate back into a genome weight."""
         return weight_lo + max(0.0, min(1.0, value)) * (weight_hi - weight_lo)
 
-    def generic_weight_slots(genome: neat.DefaultGenome) -> List[Tuple[int, int]]:
-        """Select Generic Dc-input and Bias-input connection weights for SPS."""
-        input_keys = config.genome_config.input_keys
-        px_key = input_keys[0]
-        py_key = input_keys[1]
-        pz_key = input_keys[2]
-        distance_key = input_keys[3]
-        bias_input_key = input_keys[4]
-        preferred_inputs = {distance_key, bias_input_key}
+    def generic_weight_slots(genome: neat.DefaultGenome, design_space: str) -> List[Tuple[int, int]]:
+        """Select generic connection weights for the active SPS design space."""
+        px, py, pz, distance, bias_input = config.genome_config.input_keys
+        vx, vy, vz, r, g, b = config.genome_config.output_keys
 
-        slots = [key for key, connection in sorted(genome.connections.items()) if connection.enabled and key[0] in preferred_inputs]
-        # print(len(slots))
-        return slots
+        distance_to_velocity_slots = [
+            (distance, vx), (distance, vy), (distance, vz),
+        ]
+
+        distance_to_color_slots = [
+            (distance, r), (distance, g), (distance, b),
+        ]
+
+        bias_to_velocity_slots = [
+            (bias_input, vx), (bias_input, vy), (bias_input, vz),
+        ]
+
+        bias_to_color_slots = [
+            (bias_input, r), (bias_input, g), (bias_input, b),
+        ]
+
+        position_to_velocity_slots = [
+            (px, vx), (px, vy), (px, vz),
+            (py, vx), (py, vy), (py, vz),
+            (pz, vx), (pz, vy), (pz, vz),
+        ]
+
+        preferred_slots = {
+            "velocity": distance_to_velocity_slots + bias_to_velocity_slots + position_to_velocity_slots,
+            "color": distance_to_color_slots + bias_to_color_slots,
+        }[design_space]
+
+        slots = [
+            key for key in preferred_slots
+            if key in genome.connections and genome.connections[key].enabled
+        ]
+        if slots:
+            return slots
 
         # Fallback prevents SPS from breaking if mutations deleted/disabled preferred links.
         return [key for key, connection in sorted(genome.connections.items()) if connection.enabled] or sorted(genome.connections)
@@ -234,6 +259,7 @@ def main() -> int:
     sps_search: Optional[SequentialPlaneSearch] = None
     sps_bound_genome: Optional[neat.DefaultGenome] = None
     sps_bound_species_key = 1
+    sps_design_space = "color"
     sps_weight_slots: List[Tuple[int, int]] = []
     sps_candidates: List[Candidate] = []
     paused = False
@@ -310,7 +336,7 @@ def main() -> int:
         for i, search_vector in enumerate(sps_search.transforms()):
             variant = apply_weight_vector(bound_genome, sps_weight_slots, search_vector)
             # detail information of the SPS species
-            label = f"base={weight_summary(variant, sps_weight_slots)}"
+            label = f"{sps_design_space} {weight_summary(variant, sps_weight_slots)} slots={len(sps_weight_slots)}"
             batch.append(make_candidate(
                 i + 1,
                 variant,
@@ -320,18 +346,35 @@ def main() -> int:
             ))
         return batch
 
+    def rebuild_sps_search(bound_genome: neat.DefaultGenome) -> None:
+        """Reset SPS history and rebuild the current plane for the active design space."""
+        nonlocal sps_weight_slots, sps_search, sps_candidates
+        sps_weight_slots = generic_weight_slots(bound_genome, sps_design_space)
+        start_vector = genome_to_weight_vector(bound_genome, sps_weight_slots)
+        sps_search = SequentialPlaneSearch(len(sps_weight_slots), start_vector, seed=args.seed)
+        sps_candidates = build_sps_batch(bound_genome, args.seed)
+
     def bind_sps_to_selection() -> None:
         """Bind SPS to the selected IEC genome, or candidate 1 if none is selected."""
-        nonlocal mode, sps_bound_genome, sps_bound_species_key, sps_weight_slots, sps_search, sps_candidates
+        nonlocal mode, sps_bound_genome, sps_bound_species_key
         selected_indices = [i for i, candidate in enumerate(candidates) if candidate.selected]
         source = candidates[selected_indices[0] if selected_indices else 0]
         sps_bound_genome = copy.deepcopy(source.genome)
         sps_bound_species_key = source.species_key
-        sps_weight_slots = generic_weight_slots(sps_bound_genome)
-        start_vector = genome_to_weight_vector(sps_bound_genome, sps_weight_slots)
-        sps_search = SequentialPlaneSearch(len(sps_weight_slots), start_vector, seed=args.seed)
-        sps_candidates = build_sps_batch(sps_bound_genome, args.seed)
+        rebuild_sps_search(sps_bound_genome)
         mode = "SPS"
+
+    def switch_sps_design_space() -> None:
+        """Toggle the active SPS design space and reset its incompatible history."""
+        nonlocal sps_design_space
+        if mode != "SPS":
+            return
+        if sps_bound_genome is None:
+            bind_sps_to_selection()
+            return
+
+        sps_design_space = "velocity" if sps_design_space == "color" else "color"
+        rebuild_sps_search(sps_bound_genome)
 
     def reset_current_mode() -> None:
         """Reset only the active interaction mode."""
@@ -427,6 +470,8 @@ def main() -> int:
                     reset_current_mode()
                 elif event.key == pygame.K_e:
                     export_current_target()
+                elif event.key == pygame.K_c and mode == "SPS":
+                    switch_sps_design_space()
                 elif event.key == pygame.K_w and mode == "IEC":
                     for candidate in candidates:
                         breeder.randomize_weights(candidate.genome)
@@ -491,8 +536,8 @@ def main() -> int:
         if mode == "SPS":
             bound_key = sps_bound_species_key if sps_bound_genome is not None else "none"
             steps = len(sps_search.history) if sps_search is not None else 0
-            status = f"mode=SPS-weight  system=generic  bound_key={bound_key}  weight slots={len(sps_weight_slots)}  sps_steps={steps}  paused={paused}"
-            help1 = "click / 1..9: choose preferred sample   Tab: IEC   B: rebind genome   R: replay E: export genome S: reset"
+            status = f"mode=SPS-weight  system=generic  design={sps_design_space}  bound_key={bound_key}  weight slots={len(sps_weight_slots)}  sps_steps={steps}  paused={paused}"
+            help1 = "click / 1..9: choose preferred sample   C: switch color/velocity   Tab: IEC   B: rebind genome   R: replay E: export genome S: reset"
         else:
             status = f"mode=IEC  system=generic  generation={generation}  paused={paused}"
             help1 = "click / 1..9: select   N: new gen   B/Tab: SPS bind   R: replay   W: randomize weights   E: export genome S: reset"
