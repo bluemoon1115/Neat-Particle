@@ -19,7 +19,7 @@ from particle_systems import make_system
 from sps_selection import load_particle_config, run_auto_sps_selection
 
 
-REPORT_HISTORY_INTERVAL = 5
+REPORT_HISTORY_INTERVAL = 10
 
 
 def _default_config_path() -> str:
@@ -73,6 +73,11 @@ def _write_run_outputs(args, config: neat.Config, result) -> tuple[str, str]:
         "final_distance": result.final_distance,
         "final_histogram_distance": result.final_histogram_distance,
         "final_ssim_distance": result.final_ssim_distance,
+        "initial_design_space": result.initial_design_space,
+        "final_design_space": result.final_design_space,
+        "switch_step": result.switch_step,
+        "switch_reason": result.switch_reason,
+        "initial_best_distance": result.initial_best_distance,
         "history_interval": REPORT_HISTORY_INTERVAL,
         "history": _compact_history(result.history),
     }
@@ -226,6 +231,9 @@ def main() -> int:
     print(f"Final behavioral distance: {result.final_distance:.6f}")
     print(f"Final histogram distance: {result.final_histogram_distance:.6f}")
     print(f"Final SSIM distance: {result.final_ssim_distance:.6f}")
+    print(f"SPS design space: {result.initial_design_space} -> {result.final_design_space}")
+    if result.switch_step is not None:
+        print(f"SPS switch: step={result.switch_step} reason={result.switch_reason}")
     print(f"Seed: {args.seed}")
     print(f"Final genome: {final_path}")
     print(f"Run report: {report_path}")

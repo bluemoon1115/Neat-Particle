@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(BASE_DIR)
 sys.path.insert(0, REPO_ROOT)
 sys.path.insert(0, BASE_DIR)
 
+import sps_selection
 from genome_targets import genome_to_target_data, load_genome_target, save_genome_target, target_data_to_genome
 from bayesian_preference_optimizer import BayesianOptimizationDependencyError
 from particle_similarity import ParticleSimilaritySettings, compare_genomes, histogram_distance, profile_genome, ssim_distance
@@ -23,7 +27,7 @@ from sps_selection import (
     run_auto_sps_selection,
     select_nearest_candidate,
 )
-from auto_sps_select import _compact_history
+from auto_sps_select import _compact_history, _write_run_outputs
 
 
 CONFIG_PATH = os.path.join(BASE_DIR, "config-generic.ini")
@@ -72,6 +76,55 @@ class AutoSpsSelectionTest(unittest.TestCase):
         self.assertEqual(len(candidates), 9)
         self.assertEqual(candidates[4].search_vector.vector, search.x_plus)
 
+    def test_weight_slots_support_velocity_and_color_design_spaces(self):
+        input_keys = self.config.genome_config.input_keys
+        output_keys = self.config.genome_config.output_keys
+        px, py, pz, distance, bias_input = input_keys
+        vx, vy, vz, r, g, b = output_keys
+
+        velocity_slots = generic_weight_slots(self.target, self.config, "velocity")
+        color_slots = generic_weight_slots(self.target, self.config, "color")
+
+        self.assertEqual(
+            velocity_slots,
+            [
+                (distance, vx), (distance, vy), (distance, vz),
+                (bias_input, vx), (bias_input, vy), (bias_input, vz),
+                (px, vx), (px, vy), (px, vz),
+                (py, vx), (py, vy), (py, vz),
+                (pz, vx), (pz, vy), (pz, vz),
+            ],
+        )
+        self.assertEqual(
+            color_slots,
+            [
+                (distance, r), (distance, g), (distance, b),
+                (bias_input, r), (bias_input, g), (bias_input, b),
+            ],
+        )
+
+    def _mock_selection_distances(self, distances):
+        def choose(_candidates, _target, _config, **_kwargs):
+            distance = distances.pop(0)
+            candidate_distances = [distance + 0.1 for _ in range(9)]
+            candidate_distances[4] = distance
+            return 4, distance, candidate_distances
+
+        return choose
+
+    def _create_fake_search(self, _bound_genome, slots, _config, seed=None):
+        class FakeSearch:
+            def __init__(self, dimensions):
+                self.x_plus = tuple(0.5 for _ in range(dimensions))
+
+            def transforms(self):
+                return [sps_selection.SearchVector.from_vector(self.x_plus) for _ in range(9)]
+
+            def observe(self, _chosen_index):
+                return None
+
+        return FakeSearch(len(slots))
+
     def test_select_nearest_candidate_uses_minimum_distance(self):
         slots = generic_weight_slots(self.target, self.config)
         search = self._create_sps_search_or_skip(self.target, slots, seed=5)
@@ -113,13 +166,14 @@ class AutoSpsSelectionTest(unittest.TestCase):
             FAST_SIMILARITY_SETTINGS,
         )
 
-        self.assertEqual(result.histogram_distance, 0.0)
+        self.assertGreaterEqual(result.histogram_distance, 0.0)
+        self.assertLessEqual(result.histogram_distance, 1.0)
         self.assertGreaterEqual(result.ssim_distance, 0.0)
         self.assertLessEqual(result.ssim_distance, 1.0)
         self.assertGreaterEqual(result.combined_distance, 0.0)
         self.assertLessEqual(result.combined_distance, 1.0)
 
-    def test_compare_genomes_uses_ssim_only_temporarily(self):
+    def test_compare_genomes_combines_histogram_and_ssim_distance(self):
         other = self.factory.create_random_genome()
 
         result = compare_genomes(
@@ -129,8 +183,8 @@ class AutoSpsSelectionTest(unittest.TestCase):
             FAST_SIMILARITY_SETTINGS,
         )
 
-        self.assertEqual(result.histogram_distance, 0.0)
-        self.assertEqual(result.combined_distance, result.ssim_distance)
+        expected = 0.75 * result.histogram_distance + 0.25 * result.ssim_distance
+        self.assertAlmostEqual(result.combined_distance, expected)
 
     def test_histogram_similarity_includes_particle_color(self):
         dark = copy.deepcopy(self.target)
@@ -191,6 +245,8 @@ class AutoSpsSelectionTest(unittest.TestCase):
         self.assertIn("distances", result.history[0])
         self.assertEqual(len(result.history[0]["distances"]), 9)
         self.assertGreaterEqual(result.elapsed_seconds, 0.0)
+        self.assertEqual(result.initial_design_space, "velocity")
+        self.assertEqual(result.history[0]["design_space"], "velocity")
 
     def test_auto_selection_stops_at_max_steps(self):
         try:
@@ -208,6 +264,58 @@ class AutoSpsSelectionTest(unittest.TestCase):
         self.assertEqual(result.steps, 3)
         self.assertGreaterEqual(result.elapsed_seconds, 0.0)
 
+    def test_auto_selection_switches_when_half_max_steps_remain(self):
+        distances = [0.8, 0.8, 0.8, 0.8]
+        with patch.object(sps_selection, "create_sps_search", side_effect=self._create_fake_search), \
+                patch.object(sps_selection, "select_nearest_candidate", side_effect=self._mock_selection_distances(distances)):
+            result = run_auto_sps_selection(
+                self.target,
+                self.config,
+                seed=31,
+                threshold=-1.0,
+                max_steps=4,
+            )
+
+        self.assertEqual(result.initial_design_space, "velocity")
+        self.assertEqual(result.final_design_space, "color")
+        self.assertEqual(result.switch_step, 2)
+        self.assertEqual(result.switch_reason, "half_max_steps_remaining")
+        self.assertEqual(result.history[1]["switch_to_design_space"], "color")
+        self.assertEqual(result.history[2]["design_space"], "color")
+
+    def test_auto_selection_switches_when_distance_reaches_half_initial_distance(self):
+        distances = [0.8, 0.3, 0.3, 0.3]
+        with patch.object(sps_selection, "create_sps_search", side_effect=self._create_fake_search), \
+                patch.object(sps_selection, "select_nearest_candidate", side_effect=self._mock_selection_distances(distances)):
+            result = run_auto_sps_selection(
+                self.target,
+                self.config,
+                seed=37,
+                threshold=-1.0,
+                max_steps=4,
+            )
+
+        self.assertEqual(result.initial_best_distance, 0.8)
+        self.assertEqual(result.final_design_space, "color")
+        self.assertEqual(result.switch_step, 2)
+        self.assertEqual(result.switch_reason, "half_initial_distance")
+
+    def test_auto_selection_switches_at_most_once(self):
+        distances = [0.8, 0.3, 0.2, 0.1, 0.05]
+        with patch.object(sps_selection, "create_sps_search", side_effect=self._create_fake_search), \
+                patch.object(sps_selection, "select_nearest_candidate", side_effect=self._mock_selection_distances(distances)):
+            result = run_auto_sps_selection(
+                self.target,
+                self.config,
+                seed=41,
+                threshold=-1.0,
+                max_steps=5,
+            )
+
+        switch_records = [record for record in result.history if "switch_to_design_space" in record]
+        self.assertEqual(len(switch_records), 1)
+        self.assertEqual(result.final_design_space, "color")
+
 
 class AutoSpsReportTest(unittest.TestCase):
     def test_compact_history_keeps_every_five_steps_and_final_step(self):
@@ -216,6 +324,54 @@ class AutoSpsReportTest(unittest.TestCase):
         compact = _compact_history(history)
 
         self.assertEqual([record["step"] for record in compact], [5, 10, 12])
+
+    def test_run_report_includes_design_space_switch_metadata(self):
+        config = load_particle_config(CONFIG_PATH)
+        factory = ParticleGenomeFactory(config, seed=43)
+        genome = factory.create_random_genome()
+        result = SimpleNamespace(
+            final_genome=genome,
+            steps=2,
+            stop_reason="max_steps",
+            elapsed_seconds=0.1,
+            final_distance=0.2,
+            final_histogram_distance=0.2,
+            final_ssim_distance=0.0,
+            initial_design_space="velocity",
+            final_design_space="color",
+            switch_step=2,
+            switch_reason="half_max_steps_remaining",
+            initial_best_distance=0.8,
+            history=[
+                {"step": 1, "design_space": "velocity"},
+                {
+                    "step": 2,
+                    "design_space": "velocity",
+                    "switch_to_design_space": "color",
+                    "switch_reason": "half_max_steps_remaining",
+                },
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            args = SimpleNamespace(
+                output_dir=temp_dir,
+                seed=43,
+                target=os.path.join(temp_dir, "target.json"),
+                config=CONFIG_PATH,
+                threshold=-1.0,
+                max_steps=2,
+            )
+            save_genome_target(args.target, genome, config, candidate_key=None, mode="SPS")
+            _final_path, report_path = _write_run_outputs(args, config, result)
+            with open(report_path, "r", encoding="utf-8") as file:
+                report = json.load(file)
+
+        self.assertEqual(report["initial_design_space"], "velocity")
+        self.assertEqual(report["final_design_space"], "color")
+        self.assertEqual(report["switch_step"], 2)
+        self.assertEqual(report["switch_reason"], "half_max_steps_remaining")
+        self.assertEqual(report["initial_best_distance"], 0.8)
 
 
 if __name__ == "__main__":

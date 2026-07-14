@@ -17,7 +17,6 @@ from particle_similarity import (
     ParticleSimilaritySettings,
     compare_profiles,
     histogram_distance,
-    ssim_distance,
     profile_genome,
 )
 from sequential_plane_search import SearchVector, SequentialPlaneSearch
@@ -45,6 +44,11 @@ class SpsRunResult:
     stop_reason: str
     history: List[Dict[str, object]]
     elapsed_seconds: float
+    initial_design_space: str
+    final_design_space: str
+    switch_step: Optional[int]
+    switch_reason: Optional[str]
+    initial_best_distance: Optional[float]
 
 
 class ParticleGenomeFactory:
@@ -101,14 +105,44 @@ def decode_weight(value: float, config: neat.Config) -> float:
     return weight_lo + max(0.0, min(1.0, value)) * (weight_hi - weight_lo)
 
 
-def generic_weight_slots(genome: neat.DefaultGenome, config: neat.Config) -> List[WeightSlot]:
-    """Select Generic RGB-input connection weights for SPS."""
-    input_keys = config.genome_config.input_keys
-    preferred_inputs = {input_keys[0], input_keys[1], input_keys[2]}
+def generic_weight_slots(
+    genome: neat.DefaultGenome,
+    config: neat.Config,
+    design_space: str = "velocity",
+) -> List[WeightSlot]:
+    """Select Generic connection weights for one SPS design space."""
+    px, py, pz, distance, bias_input = config.genome_config.input_keys
+    vx, vy, vz, r, g, b = config.genome_config.output_keys
+
+    distance_to_velocity_slots = [
+        (distance, vx), (distance, vy), (distance, vz),
+    ]
+    distance_to_color_slots = [
+        (distance, r), (distance, g), (distance, b),
+    ]
+    bias_to_velocity_slots = [
+        (bias_input, vx), (bias_input, vy), (bias_input, vz),
+    ]
+    bias_to_color_slots = [
+        (bias_input, r), (bias_input, g), (bias_input, b),
+    ]
+    position_to_velocity_slots = [
+        (px, vx), (px, vy), (px, vz),
+        (py, vx), (py, vy), (py, vz),
+        (pz, vx), (pz, vy), (pz, vz),
+    ]
+
+    if design_space == "velocity":
+        preferred_slots = distance_to_velocity_slots + bias_to_velocity_slots + position_to_velocity_slots
+    elif design_space == "color":
+        preferred_slots = distance_to_color_slots + bias_to_color_slots
+    else:
+        raise ValueError(f"unknown SPS design space: {design_space!r}")
+
     slots = [
         key
-        for key, connection in sorted(genome.connections.items())
-        if connection.enabled and key[0] in preferred_inputs
+        for key in preferred_slots
+        if key in genome.connections and genome.connections[key].enabled
     ]
     return slots or [
         key
@@ -184,10 +218,7 @@ def select_nearest_candidate(
     distances = []
     for candidate in candidates:
         candidate_profile = profile_genome(candidate.genome, config, settings, include_raster=False)
-        
-        # Spatial histogram scoring is temporarily disabled.
         distances.append(histogram_distance(target_profile.histogram, candidate_profile.histogram))
-        # distances.append(ssim_distance(target_profile.raster, candidate_profile.raster))
 
     best_index = min(range(len(distances)), key=distances.__getitem__)
     return best_index, distances[best_index], distances
@@ -205,9 +236,14 @@ def run_auto_sps_selection(
     started_at = time.perf_counter()
     factory = ParticleGenomeFactory(config, seed=seed)
     bound_genome = factory.create_random_genome()
-    slots = generic_weight_slots(bound_genome, config)
+    initial_design_space = "velocity"
+    design_space = initial_design_space
+    slots = generic_weight_slots(bound_genome, config, design_space)
     search = create_sps_search(bound_genome, slots, config, seed=seed)
     history: List[Dict[str, object]] = []
+    initial_best_distance: Optional[float] = None
+    switch_step: Optional[int] = None
+    switch_reason: Optional[str] = None
 
     final_genome = bound_genome
     selection_target_profile = profile_genome(target, config, SELECTION_SETTINGS, include_raster=False)
@@ -233,25 +269,46 @@ def run_auto_sps_selection(
             target_profile=selection_target_profile,
         )
         chosen = candidates[best_index]
+        step_number = step + 1
+        if initial_best_distance is None:
+            initial_best_distance = best_distance
+
         final_genome = chosen.genome
         final_histogram_distance = best_distance
         # final_histogram_distance = 0.0
         # final_ssim_distance = best_distance
         final_distance = best_distance
-        history.append(
-            {
-                "step": step + 1,
-                "chosen_index": best_index,
-                "best_distance": best_distance,
-                "distances": distances,
-                "center_index": 4,
-            }
-        )
+        history_record: Dict[str, object] = {
+            "step": step_number,
+            "design_space": design_space,
+            "chosen_index": best_index,
+            "best_distance": best_distance,
+            "distances": distances,
+            "center_index": 4,
+        }
+        history.append(history_record)
 
         bound_genome = copy.deepcopy(chosen.genome)
         if best_distance <= threshold:
             stop_reason = "threshold"
             break
+
+        if design_space == "velocity":
+            steps_remaining = max_steps - step_number
+            if step_number > 1 and best_distance <= 0.5 * initial_best_distance:
+                switch_reason = "half_initial_distance"
+            elif steps_remaining <= max_steps / 2:
+                switch_reason = "half_max_steps_remaining"
+
+            if switch_reason is not None:
+                design_space = "color"
+                switch_step = step_number
+                history_record["switch_to_design_space"] = design_space
+                history_record["switch_reason"] = switch_reason
+                slots = generic_weight_slots(bound_genome, config, design_space)
+                search = create_sps_search(bound_genome, slots, config, seed=seed)
+                continue
+
         search.observe(best_index)
     else:
         stop_reason = "max_steps"
@@ -274,4 +331,9 @@ def run_auto_sps_selection(
         stop_reason=stop_reason,
         history=history,
         elapsed_seconds=elapsed_seconds,
+        initial_design_space=initial_design_space,
+        final_design_space=design_space,
+        switch_step=switch_step,
+        switch_reason=switch_reason,
+        initial_best_distance=initial_best_distance,
     )

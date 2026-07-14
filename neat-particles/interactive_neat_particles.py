@@ -312,11 +312,7 @@ def main() -> int:
         distance = target_distance_cache.get(signature)
         if distance is None:
             candidate_profile = profile_genome(genome, config, SELECTION_SETTINGS)
-            
-            # Spatial histogram label scoring is temporarily disabled.
             distance = histogram_distance(target_profile.histogram, candidate_profile.histogram)
-            # distance = ssim_distance(target_profile.raster, candidate_profile.raster)
-            
             target_distance_cache[signature] = distance
         return f" hist={distance:.4f}"
 

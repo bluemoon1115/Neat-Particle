@@ -125,14 +125,11 @@ def compare_profiles(
     histogram_weight: float = 0.75,
 ) -> ParticleSimilarityResult:
     """Compare sampled behavior profiles and return weighted distance components."""
-    # Spatial histogram scoring is temporarily disabled while evaluating SSIM-only behavior.
     hist = histogram_distance(target.histogram, candidate.histogram)
-    # hist = 0.0
 
     ssim = ssim_distance(target.raster, candidate.raster)
     hist_weight = _clamp01(histogram_weight)
     combined = hist_weight * hist + (1.0 - hist_weight) * ssim
-    # combined = ssim
 
     return ParticleSimilarityResult(hist, ssim, _clamp01(combined))
 
