@@ -98,10 +98,16 @@ python neat-particles/auto_sps_select.py --target neat-particles/targets/target_
 To inspect one exported target genome visually:
 
 ```bash
-python neat-particles/view_genome_target.py neat-particles/targets/target_20260627_120000_key_4.json
+python neat-particles/view_genome_target.py --target neat-particles/targets/target_20260627_120000_key_4.json
 ```
 
 The viewer opens a pygame window with the particle animation, the ANN/genome graph, input/output key labels, export metadata, config shape, and connection summary.
+
+To compare two exported target particle animations side by side and show their mixed behavior distance:
+
+```bash
+python neat-particles/view_genome_target.py --target neat-particles/targets/target_a.json --target2 neat-particles/targets/target_b.json
+```
 
 Useful options:
 

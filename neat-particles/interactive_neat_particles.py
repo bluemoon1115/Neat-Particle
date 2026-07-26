@@ -22,6 +22,9 @@ from particle_systems import BaseSystem, make_system
 from sequential_plane_search import SearchVector, SequentialPlaneSearch
 
 
+INIT_CANDIDATE_INDEX = 4
+
+
 @dataclass
 class Candidate:
     index: int
@@ -98,12 +101,44 @@ class InteractiveBreeder:
         return out[:n]
 
 
+def build_initial_iec_genomes(
+    breeder: InteractiveBreeder,
+    config: neat.Config,
+    init_path: Optional[str] = None,
+    n: int = 9,
+) -> Tuple[List[neat.DefaultGenome], Optional[int]]:
+    """Build the initial IEC genomes, optionally seeding the center with an export."""
+    if n < 1:
+        raise ValueError("initial IEC batch size must be at least 1")
+
+    init_genome = None
+    if init_path is not None:
+        init_genome, _init_data = load_genome_target(os.path.abspath(init_path), config)
+
+    genomes = [breeder.create_random_genome() for _ in range(n)]
+    if init_path is None:
+        return genomes, None
+
+    center_index = min(INIT_CANDIDATE_INDEX, n - 1)
+    genomes[center_index] = copy.deepcopy(init_genome)
+    return genomes, center_index
+
+
+def mark_initial_candidate(candidates: Sequence[Candidate], init_index: Optional[int]) -> None:
+    """Mark the imported initial candidate as selected in the IEC gallery."""
+    if init_index is None:
+        return
+    candidates[init_index].selected = True
+    candidates[init_index].label = "init"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--fps", type=int, default=60)
     parser.add_argument("--scale", type=float, default=0.45, help="S in P_t = P_{t-1} + S*V*T")
     parser.add_argument("--target", default=None, help="Optional exported target genome JSON file to show grid distances.")
+    parser.add_argument("--init", default=None, help="Optional exported genome target JSON file to seed the center IEC candidate.")
     args = parser.parse_args()
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -181,9 +216,15 @@ def main() -> int:
             (pz, vx), (pz, vy), (pz, vz),
         ]
 
+        position_to_color_slots = [
+            (px, r), (px, g), (px, b),
+            (py, r), (py, g), (py, b),
+            (pz, r), (pz, g), (pz, b),
+        ]
+
         preferred_slots = {
             "velocity": distance_to_velocity_slots + bias_to_velocity_slots + position_to_velocity_slots,
-            "color": distance_to_color_slots + bias_to_color_slots,
+            "color": distance_to_color_slots + bias_to_color_slots + position_to_color_slots,
         }[design_space]
 
         slots = [
@@ -254,7 +295,9 @@ def main() -> int:
             for i, genome in enumerate(genomes, start=1)
         ]
 
-    candidates = build_batch([breeder.create_random_genome() for _ in range(9)])
+    initial_genomes, init_index = build_initial_iec_genomes(breeder, config, args.init)
+    candidates = build_batch(initial_genomes)
+    mark_initial_candidate(candidates, init_index)
     mode = "IEC"
     sps_search: Optional[SequentialPlaneSearch] = None
     sps_bound_genome: Optional[neat.DefaultGenome] = None

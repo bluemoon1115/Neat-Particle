@@ -14,6 +14,7 @@ import neat
 
 from draw_genome import draw_genome
 from genome_targets import load_genome_target
+from particle_similarity import FINAL_SETTINGS, compare_genomes
 from particle_systems import make_system
 from sps_selection import load_particle_config
 
@@ -192,6 +193,7 @@ def run_viewer(
     json_path: str,
     config_path: str,
     *,
+    target2_path: Optional[str],
     seed: Optional[int],
     fps: int,
     scale: float,
@@ -209,6 +211,15 @@ def run_viewer(
     genome, data = load_genome_target(json_path, config)
     net = neat.nn.FeedForwardNetwork.create(genome, config)
     system = make_system(seed=seed)
+    genome2 = None
+    net2 = None
+    system2 = None
+    similarity = None
+    if target2_path is not None:
+        genome2, _data2 = load_genome_target(target2_path, config)
+        net2 = neat.nn.FeedForwardNetwork.create(genome2, config)
+        system2 = make_system(seed=seed)
+        similarity = compare_genomes(genome, genome2, config, FINAL_SETTINGS)
 
     pygame.init()
     pygame.display.set_caption(f"NEAT Particle Target: {os.path.basename(json_path)}")
@@ -235,9 +246,13 @@ def run_viewer(
                     paused = not paused
                 elif event.key == pygame.K_r:
                     system = make_system(seed=seed)
+                    if target2_path is not None:
+                        system2 = make_system(seed=seed)
 
         if not paused:
             system.update(net, dt=dt, scale=scale)
+            if target2_path is not None:
+                system2.update(net2, dt=dt, scale=scale)
 
         width, height = screen.get_size()
         margin = 14
@@ -266,7 +281,24 @@ def run_viewer(
 
         px, py, pw, ph = particle_rect
         animation_rect = (px + 8, py + 40, pw - 16, ph - 48)
-        system.draw(screen, animation_rect)
+        if target2_path is None:
+            system.draw(screen, animation_rect)
+        else:
+            gap = 10
+            half_h = (animation_rect[3] - gap) // 2
+            first_rect = (animation_rect[0], animation_rect[1], animation_rect[2], half_h)
+            second_rect = (
+                animation_rect[0],
+                animation_rect[1] + half_h + gap,
+                animation_rect[2],
+                animation_rect[3] - half_h - gap,
+            )
+            pygame.draw.rect(screen, (8, 8, 12), first_rect, 0)
+            pygame.draw.rect(screen, (8, 8, 12), second_rect, 0)
+            system.draw(screen, first_rect)
+            system2.draw(screen, second_rect)
+            screen.blit(small.render(f"target: {os.path.basename(json_path)}", True, (220, 220, 220)), (first_rect[0] + 8, first_rect[1] + 8))
+            screen.blit(small.render(f"target2: {os.path.basename(target2_path)}", True, (220, 220, 220)), (second_rect[0] + 8, second_rect[1] + 8))
 
         gx, gy, gw, gh = graph_rect
         graph_inner = (gx + 8, gy + 40, gw - 16, int(gh * 0.68))
@@ -293,6 +325,14 @@ def run_viewer(
             f"file={os.path.basename(json_path)}  fps={fps}  scale={scale:.3g}  "
             f"paused={paused}  Space: pause  R: reset particles  Esc: close"
         )
+        if target2_path is not None:
+            status = (
+                f"file={os.path.basename(json_path)}  target2={os.path.basename(target2_path)}  "
+                f"behavior_distance={similarity.combined_distance:.6f}  "
+                f"hist={similarity.histogram_distance:.6f}  ssim={similarity.ssim_distance:.6f}  "
+                f"fps={fps}  scale={scale:.3g}  "
+                f"paused={paused}  Space: pause  R: reset particles  Esc: close"
+            )
         screen.blit(font.render(status, True, (230, 230, 230)), (margin, height - footer_h + 10))
         pygame.display.flip()
 
@@ -303,7 +343,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="View a neat-particles exported genome target JSON file."
     )
-    parser.add_argument("--target", help="Path to a JSON file produced by genome_to_target_data/save_genome_target.")
+    parser.add_argument("--target", required=True, help="Path to a JSON file produced by genome_to_target_data/save_genome_target.")
+    parser.add_argument("--target2", default=None, help="Optional second target JSON to render and compare.")
     parser.add_argument("--config", default=_default_config_path(), help="Path to particle NEAT config.")
     parser.add_argument("--seed", type=int, default=None, help="Particle simulation seed.")
     parser.add_argument("--fps", type=int, default=60)
@@ -315,6 +356,10 @@ def main() -> int:
     if not os.path.exists(target_path):
         print(f"Target JSON does not exist: {target_path}")
         return 2
+    target2_path = os.path.abspath(args.target2) if args.target2 else None
+    if target2_path is not None and not os.path.exists(target2_path):
+        print(f"Second target JSON does not exist: {target2_path}")
+        return 2
 
     config_path = os.path.abspath(args.config)
     if not os.path.exists(config_path):
@@ -324,6 +369,9 @@ def main() -> int:
     try:
         with open(target_path, "r", encoding="utf-8") as file:
             json.load(file)
+        if target2_path is not None:
+            with open(target2_path, "r", encoding="utf-8") as file:
+                json.load(file)
     except json.JSONDecodeError as exc:
         print(f"Target file is not valid JSON: {exc}")
         return 2
@@ -331,6 +379,7 @@ def main() -> int:
     run_viewer(
         target_path,
         config_path,
+        target2_path=target2_path,
         seed=args.seed,
         fps=args.fps,
         scale=args.scale,

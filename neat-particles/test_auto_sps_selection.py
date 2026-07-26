@@ -27,7 +27,13 @@ from sps_selection import (
     run_auto_sps_selection,
     select_nearest_candidate,
 )
-from auto_sps_select import _compact_history, _write_run_outputs
+from auto_sps_select import _compact_history, _export_auto_result_target, _write_run_outputs
+from interactive_neat_particles import (
+    INIT_CANDIDATE_INDEX,
+    InteractiveBreeder,
+    build_initial_iec_genomes,
+    mark_initial_candidate,
+)
 
 
 CONFIG_PATH = os.path.join(BASE_DIR, "config-generic.ini")
@@ -54,6 +60,48 @@ class GenomeTargetTest(unittest.TestCase):
         data["config_shape"]["num_outputs"] += 1
         with self.assertRaises(ValueError):
             target_data_to_genome(data, self.config)
+
+    def test_initial_iec_genomes_seed_center_from_export(self):
+        source_factory = ParticleGenomeFactory(self.config, seed=101)
+        source_genome = source_factory.create_random_genome()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            init_path = os.path.join(temp_dir, "init.json")
+            save_genome_target(init_path, source_genome, self.config, candidate_key=5, mode="IEC")
+            breeder = InteractiveBreeder(self.config, seed=202)
+            genomes, init_index = build_initial_iec_genomes(breeder, self.config, init_path)
+
+        self.assertEqual(len(genomes), 9)
+        self.assertEqual(init_index, INIT_CANDIDATE_INDEX)
+        self.assertEqual(source_genome.distance(genomes[INIT_CANDIDATE_INDEX], self.config.genome_config), 0.0)
+
+        non_center_distances = [
+            source_genome.distance(genome, self.config.genome_config)
+            for index, genome in enumerate(genomes)
+            if index != INIT_CANDIDATE_INDEX
+        ]
+        self.assertEqual(len(non_center_distances), 8)
+        self.assertTrue(all(distance > 0.0 for distance in non_center_distances))
+
+        candidates = [SimpleNamespace(selected=False, label=None) for _genome in genomes]
+        mark_initial_candidate(candidates, init_index)
+        self.assertTrue(candidates[INIT_CANDIDATE_INDEX].selected)
+        self.assertEqual(candidates[INIT_CANDIDATE_INDEX].label, "init")
+        self.assertFalse(any(
+            candidate.selected
+            for index, candidate in enumerate(candidates)
+            if index != INIT_CANDIDATE_INDEX
+        ))
+
+    def test_initial_iec_genomes_reject_invalid_json(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            init_path = os.path.join(temp_dir, "invalid.json")
+            with open(init_path, "w", encoding="utf-8") as file:
+                file.write("{not valid json")
+
+            breeder = InteractiveBreeder(self.config, seed=303)
+            with self.assertRaises(json.JSONDecodeError):
+                build_initial_iec_genomes(breeder, self.config, init_path)
 
 
 class AutoSpsSelectionTest(unittest.TestCase):
@@ -100,6 +148,9 @@ class AutoSpsSelectionTest(unittest.TestCase):
             [
                 (distance, r), (distance, g), (distance, b),
                 (bias_input, r), (bias_input, g), (bias_input, b),
+                (px, r), (px, g), (px, b),
+                (py, r), (py, g), (py, b),
+                (pz, r), (pz, g), (pz, b),
             ],
         )
 
@@ -321,7 +372,7 @@ class AutoSpsReportTest(unittest.TestCase):
     def test_compact_history_keeps_every_five_steps_and_final_step(self):
         history = [{"step": step} for step in range(1, 13)]
 
-        compact = _compact_history(history)
+        compact = _compact_history(history, interval=5)
 
         self.assertEqual([record["step"] for record in compact], [5, 10, 12])
 
@@ -372,6 +423,28 @@ class AutoSpsReportTest(unittest.TestCase):
         self.assertEqual(report["switch_step"], 2)
         self.assertEqual(report["switch_reason"], "half_max_steps_remaining")
         self.assertEqual(report["initial_best_distance"], 0.8)
+
+    def test_auto_result_export_writes_target_metadata(self):
+        config = load_particle_config(CONFIG_PATH)
+        factory = ParticleGenomeFactory(config, seed=47)
+        genome = factory.create_random_genome()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            export_path = _export_auto_result_target(
+                genome,
+                config,
+                steps=7,
+                final_distance=0.123456,
+                target_dir=temp_dir,
+            )
+            with open(export_path, "r", encoding="utf-8") as file:
+                data = json.load(file)
+
+        self.assertTrue(os.path.basename(export_path).startswith("target_"))
+        self.assertEqual(data["metadata"]["candidate_key"], None)
+        self.assertEqual(data["metadata"]["mode"], "AUTO_SPS")
+        self.assertEqual(data["metadata"]["generation"], 7)
+        self.assertEqual(data["metadata"]["label"], "behavior_distance=0.123456")
 
 
 if __name__ == "__main__":
