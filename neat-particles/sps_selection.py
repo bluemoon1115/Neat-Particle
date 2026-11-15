@@ -37,6 +37,7 @@ class SpsCandidate:
 class SpsRunResult:
     target: neat.DefaultGenome
     final_genome: neat.DefaultGenome
+    acquisition: str
     final_distance: float
     final_histogram_distance: float
     final_ssim_distance: float
@@ -114,28 +115,33 @@ def generic_weight_slots(
     px, py, pz, distance, bias_input = config.genome_config.input_keys
     vx, vy, vz, r, g, b = config.genome_config.output_keys
 
-    distance_to_velocity_slots = [
+    velocity_slots = [
         (distance, vx), (distance, vy), (distance, vz),
-    ]
-    distance_to_color_slots = [
-        (distance, r), (distance, g), (distance, b),
-    ]
-    bias_to_velocity_slots = [
         (bias_input, vx), (bias_input, vy), (bias_input, vz),
-    ]
-    bias_to_color_slots = [
-        (bias_input, r), (bias_input, g), (bias_input, b),
-    ]
-    position_to_velocity_slots = [
         (px, vx), (px, vy), (px, vz),
         (py, vx), (py, vy), (py, vz),
         (pz, vx), (pz, vy), (pz, vz),
     ]
+    color_slots = [
+        (distance, r), (distance, g), (distance, b),
+        (bias_input, r), (bias_input, g), (bias_input, b),
+        (px, r), (px, g), (px, b),
+        (py, r), (py, g), (py, b),
+        (pz, r), (pz, g), (pz, b),
+    ]
+    # bias_to_velocity_slots = [
+    # ]
+    # bias_to_color_slots = [
+    # ]
+    # position_to_velocity_slots = [
+    # ]
+    # position_to_color_slots = [
+    # ]
 
     if design_space == "velocity":
-        preferred_slots = distance_to_velocity_slots + bias_to_velocity_slots + position_to_velocity_slots
+        preferred_slots = velocity_slots
     elif design_space == "color":
-        preferred_slots = distance_to_color_slots + bias_to_color_slots
+        preferred_slots = color_slots
     else:
         raise ValueError(f"unknown SPS design space: {design_space!r}")
 
@@ -197,10 +203,11 @@ def create_sps_search(
     slots: Sequence[WeightSlot],
     config: neat.Config,
     seed: Optional[int] = None,
+    acquisition: str = "gp",
 ) -> SequentialPlaneSearch:
     """Create an SPS search centered on a genome's current selected weights."""
     start_vector = genome_to_weight_vector(bound_genome, slots, config)
-    return SequentialPlaneSearch(len(slots), start_vector, seed=seed)
+    return SequentialPlaneSearch(len(slots), start_vector, seed=seed, acquisition=acquisition)
 
 
 def select_nearest_candidate(
@@ -231,15 +238,19 @@ def run_auto_sps_selection(
     seed: Optional[int],
     threshold: float,
     max_steps: int,
+    acquisition: str = "gp",
 ) -> SpsRunResult:
     """Run SPS without rendering until threshold or max steps is reached."""
+    if acquisition not in ("gp", "surrogate"):
+        raise ValueError(f"unknown SPS acquisition mode: {acquisition!r}")
+
     started_at = time.perf_counter()
     factory = ParticleGenomeFactory(config, seed=seed)
     bound_genome = factory.create_random_genome()
     initial_design_space = "velocity"
     design_space = initial_design_space
     slots = generic_weight_slots(bound_genome, config, design_space)
-    search = create_sps_search(bound_genome, slots, config, seed=seed)
+    search = create_sps_search(bound_genome, slots, config, seed=seed, acquisition=acquisition)
     history: List[Dict[str, object]] = []
     initial_best_distance: Optional[float] = None
     switch_step: Optional[int] = None
@@ -306,7 +317,7 @@ def run_auto_sps_selection(
                 history_record["switch_to_design_space"] = design_space
                 history_record["switch_reason"] = switch_reason
                 slots = generic_weight_slots(bound_genome, config, design_space)
-                search = create_sps_search(bound_genome, slots, config, seed=seed)
+                search = create_sps_search(bound_genome, slots, config, seed=seed, acquisition=acquisition)
                 continue
 
         search.observe(best_index)
@@ -324,6 +335,7 @@ def run_auto_sps_selection(
     return SpsRunResult(
         target=target,
         final_genome=final_genome,
+        acquisition=acquisition,
         final_distance=final_distance,
         final_histogram_distance=final_histogram_distance,
         final_ssim_distance=final_ssim_distance,

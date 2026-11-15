@@ -14,7 +14,7 @@ if REPO_ROOT not in sys.path:
 import neat
 
 from draw_genome import draw_genome
-from genome_targets import load_genome_target, save_genome_target
+from genome_targets import load_genome_target, save_genome_target, timestamped_target_path
 from particle_systems import make_system
 from sps_selection import load_particle_config, run_auto_sps_selection
 
@@ -41,6 +41,27 @@ def _compact_history(history: list[dict[str, object]], interval: int = REPORT_HI
     ]
 
 
+def _export_auto_result_target(
+    genome: neat.DefaultGenome,
+    config: neat.Config,
+    *,
+    steps: int,
+    final_distance: float,
+    target_dir: str,
+) -> str:
+    """Export a final auto SPS genome as a reusable target file."""
+    os.makedirs(target_dir, exist_ok=True)
+    return save_genome_target(
+        timestamped_target_path(target_dir, None),
+        genome,
+        config,
+        candidate_key=None,
+        mode="AUTO_SPS",
+        generation=steps,
+        label=f"behavior_distance={final_distance:.6f}",
+    )
+
+
 def _write_run_outputs(args, config: neat.Config, result) -> tuple[str, str]:
     base_dir = os.path.dirname(os.path.abspath(__file__))
     output_dir = os.path.abspath(args.output_dir or os.path.join(base_dir, "auto-runs"))
@@ -65,6 +86,7 @@ def _write_run_outputs(args, config: neat.Config, result) -> tuple[str, str]:
         "final_genome_path": os.path.abspath(final_path),
         "config_path": os.path.abspath(args.config),
         "seed": args.seed,
+        "sps_acquisition": getattr(result, "acquisition", getattr(args, "sps_acquisition", "gp")),
         "threshold": args.threshold,
         "max_steps": args.max_steps,
         "stop_reason": result.stop_reason,
@@ -208,6 +230,7 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--threshold", type=float, default=0.05)
     parser.add_argument("--max-steps", type=int, default=100)
+    parser.add_argument("--sps-acquisition", choices=("gp", "surrogate"), default="gp", help="SPS acquisition scorer.")
     parser.add_argument("--scale", type=float, default=0.45)
     parser.add_argument("--fps", type=int, default=60)
     parser.add_argument("--output-dir", default=None)
@@ -222,6 +245,7 @@ def main() -> int:
         seed=args.seed,
         threshold=args.threshold,
         max_steps=args.max_steps,
+        acquisition=args.sps_acquisition,
     )
     final_path, report_path = _write_run_outputs(args, config, result)
 
@@ -231,6 +255,7 @@ def main() -> int:
     print(f"Final behavioral distance: {result.final_distance:.6f}")
     print(f"Final histogram distance: {result.final_histogram_distance:.6f}")
     print(f"Final SSIM distance: {result.final_ssim_distance:.6f}")
+    print(f"SPS acquisition: {result.acquisition}")
     print(f"SPS design space: {result.initial_design_space} -> {result.final_design_space}")
     if result.switch_step is not None:
         print(f"SPS switch: step={result.switch_step} reason={result.switch_reason}")

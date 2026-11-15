@@ -54,13 +54,14 @@ def ensure_bo_dependencies() -> None:
     if _GPYTORCH_IMPORT_ERROR is not None:
         missing.append(f"gpytorch ({_GPYTORCH_IMPORT_ERROR})")
     if missing:
-        local_gpytorch = _LOCAL_GPYTORCH
+        requirements_path = os.path.join(os.path.dirname(__file__), "requirements.txt")
         raise BayesianOptimizationDependencyError(
-            "Bayesian SPS needs PyTorch and the local GPyTorch submodule installed. "
+            "Bayesian SPS needs PyTorch and the local GPyTorch submodule's dependencies. "
             "Missing imports: "
             + "; ".join(missing)
-            + ". Install torch>=2.0 and run an editable install for "
-            + local_gpytorch
+            + ". Install the SPS requirements with the Python interpreter running this script: "
+            + "python -m pip install -r "
+            + requirements_path
             + "."
         )
 

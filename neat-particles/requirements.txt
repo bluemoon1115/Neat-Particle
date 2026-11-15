@@ -1,0 +1,12 @@
+# Interactive gallery and target viewer.
+pygame>=2.0
+
+# Plotting saved run reports.
+matplotlib
+
+# GP-based SPS; GPytorch itself is loaded from the local submodule.
+torch>=2.0
+linear_operator>=0.6.1
+scipy>=1.6.0
+scikit-learn
+mpmath>=0.19,<=1.3

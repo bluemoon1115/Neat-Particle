@@ -139,6 +139,7 @@ def main() -> int:
     parser.add_argument("--scale", type=float, default=0.45, help="S in P_t = P_{t-1} + S*V*T")
     parser.add_argument("--target", default=None, help="Optional exported target genome JSON file to show grid distances.")
     parser.add_argument("--init", default=None, help="Optional exported genome target JSON file to seed the center IEC candidate.")
+    parser.add_argument("--sps-acquisition", choices=("gp", "surrogate"), default="gp", help="SPS acquisition scorer.")
     args = parser.parse_args()
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -390,7 +391,12 @@ def main() -> int:
         nonlocal sps_weight_slots, sps_search, sps_candidates
         sps_weight_slots = generic_weight_slots(bound_genome, sps_design_space)
         start_vector = genome_to_weight_vector(bound_genome, sps_weight_slots)
-        sps_search = SequentialPlaneSearch(len(sps_weight_slots), start_vector, seed=args.seed)
+        sps_search = SequentialPlaneSearch(
+            len(sps_weight_slots),
+            start_vector,
+            seed=args.seed,
+            acquisition=args.sps_acquisition,
+        )
         sps_candidates = build_sps_batch(bound_genome, args.seed)
 
     def bind_sps_to_selection() -> None:

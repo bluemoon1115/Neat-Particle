@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
 from bayesian_preference_optimizer import PreferentialBayesianOptimizer
+from surrogate_scorer import SurrogateScorer
 
 EPSILON = 1e-6
 
@@ -73,27 +74,32 @@ class SequentialPlaneSearch:
         start_vector: Sequence[float],
         seed: Optional[int] = None,
         plane_radius: float = 0.22,
+        acquisition: str = "gp",
     ):
         if dimensions < 1:
             raise ValueError("SequentialPlaneSearch needs at least one dimension")
         if len(start_vector) != dimensions:
             raise ValueError(f"start_vector needs {dimensions} values, got {len(start_vector)}")
+        if acquisition not in ("gp", "surrogate"):
+            raise ValueError(f"unknown SPS acquisition mode: {acquisition!r}")
 
         self.rng = random.Random(seed)
         self.plane_radius = plane_radius
         self.dimensions = dimensions
+        self.acquisition = acquisition
         self.default_start = _clamp_vector(start_vector)
         self.history: List[PreferenceRecord] = []
         self.x_plus: Tuple[float, ...] = self.default_start
         self.current_samples: List[PlaneSample] = []
         self.representatives: List[Tuple[float, ...]] = []
-        self.optimizer = PreferentialBayesianOptimizer(dimensions)
+        self.optimizer = PreferentialBayesianOptimizer(dimensions) if acquisition == "gp" else None
+        self.surrogate = SurrogateScorer(dimensions) if acquisition == "surrogate" else None
         self.generate_plane()
 
     def reset(self, start_vector: Optional[Sequence[float]] = None) -> None:
         """Clear preference history and rebuild the plane around a start vector."""
         self.history = []
-        self.optimizer.fit_from_records([])
+        self._fit_acquisition()
         self.x_plus = _clamp_vector(start_vector or self.default_start)
         self.generate_plane()
 
@@ -110,7 +116,7 @@ class SequentialPlaneSearch:
                 rejected.append(vector)
 
         self.history.append(PreferenceRecord(chosen=chosen, rejected=tuple(self._unique_vectors(rejected))))
-        self.optimizer.fit_from_records((record.chosen, record.rejected) for record in self.history)
+        self._fit_acquisition()
         self.x_plus = chosen
         self.generate_plane()
 
@@ -151,22 +157,39 @@ class SequentialPlaneSearch:
         self.representatives = [_clamp_vector(vector) for vector in representatives]
 
     def _estimate_x_ei(self) -> Tuple[float, ...]:
-        """Pick the expected-improvement target for the next plane axis."""
-        if not self.optimizer.fitted:
+        """Pick the acquisition target for the next plane axis."""
+        if not self._has_acquisition_history():
             direction = self._random_direction()
             return _clamp_vector(self.x_plus[i] + direction[i] * self.plane_radius for i in range(self.dimensions))
 
         candidates = [self.x_plus]
         for _ in range(256):
             candidates.append(tuple(self.rng.random() for _ in range(self.dimensions)))
-        best, _score = self.optimizer.best_expected_improvement(candidates, self.x_plus)
-        return _clamp_vector(best)
+        return _clamp_vector(self._best_scored_candidate(candidates))
 
     def _acquisition_score(self, candidate: Sequence[float]) -> float:
-        """Score a candidate using GP posterior Expected Improvement."""
-        if not self.optimizer.fitted:
+        """Score a candidate using the selected acquisition function."""
+        if not self._has_acquisition_history():
             return self.rng.random() * 0.001
-        return self.optimizer.expected_improvement([_clamp_vector(candidate)], self.x_plus)[0]
+        clamped = _clamp_vector(candidate)
+        if self.acquisition == "surrogate":
+            return self.surrogate.score(clamped, self.rng)
+        return self.optimizer.expected_improvement([clamped], self.x_plus)[0]
+
+    def _best_scored_candidate(self, candidates: Sequence[Sequence[float]]) -> Tuple[float, ...]:
+        """Return the best acquisition candidate, preferring center proximity on ties."""
+        best = None
+        best_score = -float("inf")
+        best_distance = float("inf")
+        for candidate in candidates:
+            clamped = _clamp_vector(candidate)
+            score = self._acquisition_score(clamped)
+            distance = _distance(clamped, self.x_plus)
+            if score > best_score or (abs(score - best_score) <= EPSILON and distance < best_distance):
+                best = clamped
+                best_score = score
+                best_distance = distance
+        return best if best is not None else self.x_plus
 
     def _random_direction(self) -> Tuple[float, ...]:
         """Create a random unit direction in the SPS search space."""
@@ -191,8 +214,15 @@ class SequentialPlaneSearch:
     def _best_orthogonal_step(self, center: Sequence[float], u: Sequence[float]) -> Tuple[float, ...]:
         """Choose the second plane axis from random directions orthogonal to u."""
         u_norm = _normalize(u)
+        if not self._has_acquisition_history():
+            raw = self._random_direction()
+            projection = _dot(raw, u_norm)
+            orthogonal = tuple(raw[i] - projection * u_norm[i] for i in range(self.dimensions))
+            return self._fit_plane_v_step(center, u, orthogonal, self.plane_radius)
+
         best_v = None
         best_score = -float("inf")
+        best_distance = float("inf")
 
         for _ in range(48):
             raw = self._random_direction()
@@ -200,9 +230,11 @@ class SequentialPlaneSearch:
             orthogonal = tuple(raw[i] - projection * u_norm[i] for i in range(self.dimensions))
             v = self._fit_plane_v_step(center, u, orthogonal, self.plane_radius)
             score = self._plane_score(center, u, v)
-            if score > best_score:
+            distance = _distance(tuple(center[i] + v[i] for i in range(self.dimensions)), self.x_plus)
+            if score > best_score or (abs(score - best_score) <= EPSILON and distance < best_distance):
                 best_v = v
                 best_score = score
+                best_distance = distance
 
         if best_v is None:
             return tuple(0.0 for _ in range(self.dimensions))
@@ -231,16 +263,31 @@ class SequentialPlaneSearch:
         return tuple(direction_value * radius for direction_value in normalized)
 
     def _plane_score(self, center: Sequence[float], u: Sequence[float], v: Sequence[float]) -> float:
-        """Approximate plane quality by averaging Expected Improvement over visible samples."""
+        """Approximate plane quality by averaging acquisition over visible samples."""
         points = []
         for u_coeff in (-1, 0, 1):
             for v_coeff in (-1, 0, 1):
                 point = tuple(center[i] + u_coeff * u[i] + v_coeff * v[i] for i in range(self.dimensions))
                 points.append(_clamp_vector(point))
-        if not self.optimizer.fitted:
+        if not self._has_acquisition_history():
             return self.rng.random() * 0.001
-        scores = self.optimizer.expected_improvement(points, self.x_plus)
+        if self.acquisition == "surrogate":
+            scores = [self.surrogate.score(point, self.rng) for point in points]
+        else:
+            scores = self.optimizer.expected_improvement(points, self.x_plus)
         return sum(scores) / len(scores)
+
+    def _fit_acquisition(self) -> None:
+        records = tuple((record.chosen, record.rejected) for record in self.history)
+        if self.acquisition == "surrogate":
+            self.surrogate.fit_from_records(records)
+        else:
+            self.optimizer.fit_from_records(records)
+
+    def _has_acquisition_history(self) -> bool:
+        if self.acquisition == "surrogate":
+            return self.surrogate.fitted
+        return self.optimizer.fitted
 
     def _unique_vectors(self, vectors: Sequence[Sequence[float]]) -> Tuple[Tuple[float, ...], ...]:
         """Remove near-duplicate vectors before storing preference data."""

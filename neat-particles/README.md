@@ -29,13 +29,26 @@ Motion uses the linear model you specified:
 
 ### Requirements
 
-This example uses **pygame** for visualization (optional dependency, only for examples).
+This example uses **pygame** for visualization and **matplotlib** for plotting
+saved run reports. SPS uses a GPyTorch-based acquisition scorer by default.
 
 From the repository root:
 ```bash
-pip install -e .
-pip install pygame
+git submodule update --init GPytorch
+python -m pip install -e .
+python -m pip install -r neat-particles/requirements.txt
 ```
+
+Run these commands with the same Python interpreter used to launch the example.
+The SPS code imports the local `GPytorch/` checkout directly; the requirements
+file installs its Python dependencies. It works whether you invoke pip from the
+repository root or the `neat-particles/` directory, as long as you provide the
+correct path to the requirements file.
+From the `neat-particles/` directory, use `python -m pip install -r requirements.txt`.
+
+If you already have an environment with the SPS dependencies installed, activate
+it before running the script. To use SPS without the GPyTorch dependencies, pass
+`--sps-acquisition surrogate` when launching the script.
 
 ### Run
 

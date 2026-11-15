@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import csv
 import json
 import os
 import sys
@@ -15,6 +16,7 @@ sys.path.insert(0, REPO_ROOT)
 sys.path.insert(0, BASE_DIR)
 
 import sps_selection
+import compare_sps_acquisitions
 from genome_targets import genome_to_target_data, load_genome_target, save_genome_target, target_data_to_genome
 from bayesian_preference_optimizer import BayesianOptimizationDependencyError
 from particle_similarity import ParticleSimilaritySettings, compare_genomes, histogram_distance, profile_genome, ssim_distance
@@ -163,10 +165,11 @@ class AutoSpsSelectionTest(unittest.TestCase):
 
         return choose
 
-    def _create_fake_search(self, _bound_genome, slots, _config, seed=None):
+    def _create_fake_search(self, _bound_genome, slots, _config, seed=None, acquisition="gp"):
         class FakeSearch:
             def __init__(self, dimensions):
                 self.x_plus = tuple(0.5 for _ in range(dimensions))
+                self.acquisition = acquisition
 
             def transforms(self):
                 return [sps_selection.SearchVector.from_vector(self.x_plus) for _ in range(9)]
@@ -175,6 +178,29 @@ class AutoSpsSelectionTest(unittest.TestCase):
                 return None
 
         return FakeSearch(len(slots))
+
+    def test_auto_selection_passes_surrogate_acquisition_to_searches(self):
+        distances = [0.8, 0.8, 0.8]
+        acquisitions = []
+
+        def create_search(_bound_genome, slots, _config, seed=None, acquisition="gp"):
+            acquisitions.append(acquisition)
+            return self._create_fake_search(_bound_genome, slots, _config, seed=seed, acquisition=acquisition)
+
+        with patch.object(sps_selection, "create_sps_search", side_effect=create_search), \
+                patch.object(sps_selection, "select_nearest_candidate", side_effect=self._mock_selection_distances(distances)):
+            result = run_auto_sps_selection(
+                self.target,
+                self.config,
+                seed=43,
+                threshold=-1.0,
+                max_steps=3,
+                acquisition="surrogate",
+            )
+
+        self.assertEqual(result.acquisition, "surrogate")
+        self.assertTrue(acquisitions)
+        self.assertTrue(all(acquisition == "surrogate" for acquisition in acquisitions))
 
     def test_select_nearest_candidate_uses_minimum_distance(self):
         slots = generic_weight_slots(self.target, self.config)
@@ -381,6 +407,7 @@ class AutoSpsReportTest(unittest.TestCase):
         factory = ParticleGenomeFactory(config, seed=43)
         genome = factory.create_random_genome()
         result = SimpleNamespace(
+            acquisition="surrogate",
             final_genome=genome,
             steps=2,
             stop_reason="max_steps",
@@ -419,6 +446,7 @@ class AutoSpsReportTest(unittest.TestCase):
                 report = json.load(file)
 
         self.assertEqual(report["initial_design_space"], "velocity")
+        self.assertEqual(report["sps_acquisition"], "surrogate")
         self.assertEqual(report["final_design_space"], "color")
         self.assertEqual(report["switch_step"], 2)
         self.assertEqual(report["switch_reason"], "half_max_steps_remaining")
@@ -445,6 +473,69 @@ class AutoSpsReportTest(unittest.TestCase):
         self.assertEqual(data["metadata"]["mode"], "AUTO_SPS")
         self.assertEqual(data["metadata"]["generation"], 7)
         self.assertEqual(data["metadata"]["label"], "behavior_distance=0.123456")
+
+
+class AcquisitionComparisonReportTest(unittest.TestCase):
+    def _row(self, mode, seed, distance, steps=3, stop_reason="threshold"):
+        result = SimpleNamespace(
+            stop_reason=stop_reason,
+            steps=steps,
+            elapsed_seconds=0.5 + seed,
+            final_distance=distance,
+            final_histogram_distance=distance,
+            final_ssim_distance=0.0,
+            final_design_space="color",
+            switch_step=2,
+            switch_reason="half_max_steps_remaining",
+            initial_best_distance=0.8,
+        )
+        return compare_sps_acquisitions.result_to_row(mode, seed, result)
+
+    def test_paired_seeds_use_requested_range(self):
+        self.assertEqual(compare_sps_acquisitions.paired_seeds(10, 4), [10, 11, 12, 13])
+
+    def test_summary_and_paired_comparisons_group_by_mode(self):
+        rows = [
+            self._row("gp", 1, 0.4, steps=5, stop_reason="max_steps"),
+            self._row("surrogate", 1, 0.3, steps=4),
+            self._row("gp", 2, 0.2, steps=2),
+            self._row("surrogate", 2, 0.2, steps=3),
+        ]
+
+        summary = compare_sps_acquisitions.summarize_rows(rows)
+        pairs = compare_sps_acquisitions.paired_comparisons(rows)
+
+        self.assertEqual(summary["gp"]["runs"], 2)
+        self.assertEqual(summary["gp"]["stop_reason_counts"], {"max_steps": 1, "threshold": 1})
+        self.assertAlmostEqual(summary["surrogate"]["avg_final_distance"], 0.25)
+        self.assertEqual([pair["winner"] for pair in pairs], ["surrogate", "tie"])
+
+    def test_write_outputs_creates_json_and_csv_rows(self):
+        rows = [
+            self._row("gp", 1, 0.4),
+            self._row("surrogate", 1, 0.3),
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            args = SimpleNamespace(
+                output_dir=temp_dir,
+                target=os.path.join(temp_dir, "target.json"),
+                config=CONFIG_PATH,
+                runs=1,
+                threshold=0.3,
+                max_steps=100,
+                seed_start=1,
+            )
+            json_path, csv_path = compare_sps_acquisitions.write_outputs(args, rows)
+
+            with open(json_path, "r", encoding="utf-8") as file:
+                payload = json.load(file)
+            with open(csv_path, "r", encoding="utf-8", newline="") as file:
+                csv_rows = list(csv.DictReader(file))
+
+        self.assertEqual(payload["runs_per_mode"], 1)
+        self.assertEqual(len(payload["rows"]), 2)
+        self.assertEqual([row["mode"] for row in csv_rows], ["gp", "surrogate"])
 
 
 if __name__ == "__main__":

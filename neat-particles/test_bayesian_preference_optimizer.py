@@ -1,8 +1,14 @@
 ﻿from __future__ import annotations
 
 import math
-import random
+import os
+import sys
 import unittest
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(BASE_DIR)
+sys.path.insert(0, REPO_ROOT)
+sys.path.insert(0, BASE_DIR)
 
 from bayesian_preference_optimizer import (
     BayesianOptimizationDependencyError,
@@ -10,6 +16,11 @@ from bayesian_preference_optimizer import (
     PreferentialBayesianOptimizer,
 )
 from sequential_plane_search import SequentialPlaneSearch
+from sps_selection import ParticleGenomeFactory, build_sps_candidates, create_sps_search, generic_weight_slots, load_particle_config
+from surrogate_scorer import SurrogateScorer
+
+
+CONFIG_PATH = os.path.join(BASE_DIR, "config-generic.ini")
 
 
 class PreferenceDatasetTest(unittest.TestCase):
@@ -74,6 +85,74 @@ class SequentialPlaneSearchTest(unittest.TestCase):
             search.observe(chosen)
 
         self.assertLess(distance(search.x_plus), start_distance)
+
+
+class _ZeroRng:
+    def random(self):
+        return 0.0
+
+
+class SurrogateScorerTest(unittest.TestCase):
+    def test_records_positives_and_negatives(self):
+        scorer = SurrogateScorer(2)
+        scorer.fit_from_records([
+            ((0.8, 0.8), ((0.2, 0.2), (0.3, 0.3))),
+            ((0.7, 0.8), ((0.1, 0.2),)),
+        ])
+
+        self.assertEqual(scorer.positives, [(0.8, 0.8), (0.7, 0.8)])
+        self.assertEqual(scorer.negatives, [(0.2, 0.2), (0.3, 0.3), (0.1, 0.2)])
+
+    def test_rewards_positives_and_penalizes_negatives(self):
+        scorer = SurrogateScorer(2)
+        scorer.fit_from_records([((0.8, 0.8), ((0.2, 0.2),))])
+
+        self.assertGreater(
+            scorer.score((0.8, 0.8), _ZeroRng()),
+            scorer.score((0.2, 0.2), _ZeroRng()),
+        )
+
+
+class SurrogateSequentialPlaneSearchTest(unittest.TestCase):
+    def test_surrogate_mode_builds_initial_plane_without_gp_fit(self):
+        search = SequentialPlaneSearch(2, (0.5, 0.5), seed=3, acquisition="surrogate")
+
+        self.assertEqual(search.acquisition, "surrogate")
+        self.assertFalse(search.surrogate.fitted)
+        self.assertEqual(len(search.transforms()), 9)
+        self.assertGreater(len({sample.vector for sample in search.transforms()}), 1)
+
+    def test_surrogate_observe_records_visible_preferences(self):
+        search = SequentialPlaneSearch(2, (0.5, 0.5), seed=3, acquisition="surrogate")
+        search.observe(4)
+
+        self.assertEqual(search.surrogate.positives, [search.history[0].chosen])
+        self.assertEqual(len(search.surrogate.negatives), 8)
+        self.assertTrue(search.surrogate.fitted)
+
+    def test_invalid_acquisition_mode_is_rejected(self):
+        with self.assertRaises(ValueError):
+            SequentialPlaneSearch(2, (0.5, 0.5), acquisition="unknown")
+
+    def test_score_tie_prefers_candidate_closest_to_center(self):
+        search = SequentialPlaneSearch(2, (0.5, 0.5), seed=3, acquisition="surrogate")
+        search._acquisition_score = lambda _candidate: 1.0
+
+        best = search._best_scored_candidate([(0.8, 0.8), (0.51, 0.5), (0.7, 0.7)])
+
+        self.assertEqual(best, (0.51, 0.5))
+
+
+class SpsHelperApiTest(unittest.TestCase):
+    def test_create_sps_search_supports_surrogate_acquisition(self):
+        config = load_particle_config(CONFIG_PATH)
+        genome = ParticleGenomeFactory(config, seed=17).create_random_genome()
+        slots = generic_weight_slots(genome, config)
+        search = create_sps_search(genome, slots, config, seed=3, acquisition="surrogate")
+        candidates = build_sps_candidates(genome, slots, search, config)
+
+        self.assertEqual(search.acquisition, "surrogate")
+        self.assertEqual(len(candidates), 9)
 
 
 if __name__ == "__main__":
